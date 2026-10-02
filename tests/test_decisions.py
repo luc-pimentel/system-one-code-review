@@ -232,3 +232,17 @@ def test_scripts_are_grouped_by_their_main_and_the_rest_comes_last(monkeypatch):
 
 def functions_of(path):
     return decisions.functions(path, path.read_text())
+
+
+def test_folded_sections_carry_the_shape_in_their_summary():
+    entries = [
+        decisions.Entry(fn) for path in decisions.python_files([str(APP)]) for fn in functions_of(path)
+    ]
+    text = decisions.Layout(app_graph(), "app", "cli.main").render(entries, 9, fold=True)
+    assert text.startswith(
+        "<details><summary><b><code>app</code></b> — 1 function</summary>\n\n⚪ **`cli.main`**"
+    )
+    assert "<details><summary><b><code>app run</code></b> — 4 functions</summary>" in text
+    assert "<details><summary><b>Not reached from <code>app</code></b> — 1 function</summary>" in text
+    tight = decisions.Layout(app_graph(), "app", "cli.main").render(entries, 1, fold=True)
+    assert "<b><code>app run</code></b> — 4 functions, 1 🔴, 3 🟡</summary>" in tight

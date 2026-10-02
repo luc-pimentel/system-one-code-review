@@ -542,8 +542,8 @@ class Layout:
 
     def heading(self, group: str | None) -> str:
         if group is None:  # the leftovers
-            return f"**Not reached from `{self.script}`**"
-        return f"**`{self.script}`**" if group == "" else f"**`{self.script} {group}`**"
+            return f"Not reached from `{self.script}`"
+        return f"`{self.script}`" if group == "" else f"`{self.script} {group}`"
 
     def key(self, item: Entry) -> tuple:
         label = item.fn.label
@@ -554,16 +554,34 @@ class Layout:
             item.fn.line,
         )
 
-    def render(self, entries: list[Entry], limit: int, link_base: str = "") -> str:
-        sections: dict[str | None, list[str]] = {}
+    def render(self, entries: list[Entry], limit: int, link_base: str = "", *, fold: bool = False) -> str:
+        sections: dict[str | None, list[Entry]] = {}
         for item in sorted(entries, key=self.key):
-            group = self.group(item.fn.label)
-            note = self.note(item.fn.label, group)
-            block = render(item.fn, limit, link_base, before=item.before, new=item.new, note=note)
-            sections.setdefault(group, []).append(block)
-        return "\n\n".join(
-            self.heading(g) + "\n\n" + "\n\n".join(sections[g]) for g in self.groups if g in sections
-        )
+            sections.setdefault(self.group(item.fn.label), []).append(item)
+        parts = []
+        for group in self.groups:
+            if group not in sections:  # no function under this heading
+                continue
+            blocks = [
+                render(e.fn, limit, link_base, before=e.before, new=e.new, note=self.note(e.fn.label, group))
+                for e in sections[group]
+            ]
+            parts.append(section(self.heading(group), [e.fn for e in sections[group]], blocks, limit, fold))
+        return "\n\n".join(parts)
+
+
+def section(heading: str, fns: list[Function], blocks: list[str], limit: int, fold: bool) -> str:
+    """One entry point's functions under its heading: a bold line, or a folded block with the shape in its summary."""
+    body = "\n\n".join(blocks)
+    if not fold:  # plain markdown, for the terminal
+        return f"**{heading}**\n\n{body}"
+    marks = [mark(fn, limit) for fn in fns]
+    shape = f"{len(fns)} function" + ("s" if len(fns) != 1 else "")
+    for symbol in ("🔴", "🟡"):
+        if symbol in marks:  # worth a look before expanding
+            shape += f", {marks.count(symbol)} {symbol}"
+    summary = re.sub(r"`([^`]*)`", r"<code>\1</code>", heading)
+    return f"<details><summary><b>{summary}</b> — {shape}</summary>\n\n{body}\n\n</details>"
 
 
 def apps(
@@ -579,7 +597,7 @@ def apps(
     return [(f"python -m {module_name(directory / f'{stem}.py')}", f"{stem}.main") for stem in sorted(stems)]
 
 
-def arrange(entries: list[Entry], limit: int, link_base: str = "") -> str:
+def arrange(entries: list[Entry], limit: int, link_base: str = "", *, fold: bool = False) -> str:
     """Entries by directory, each on its entry points' paths; what no entry point reaches comes last."""
     console = entry_point()
     by_directory: dict[Path, list[Entry]] = {}
@@ -593,12 +611,12 @@ def arrange(entries: list[Entry], limit: int, link_base: str = "") -> str:
             reached = graph.reach(entry)
             mine = [item for item in left if item.fn.label in reached]
             if mine:  # this entry point reaches some of them
-                sections.append(Layout(graph, script, entry).render(mine, limit, link_base))
+                sections.append(Layout(graph, script, entry).render(mine, limit, link_base, fold=fold))
                 left = [item for item in left if item not in mine]
         if left:  # nothing here reaches them
-            heading = f"**Not reached from any entry point in `{module_name(directory)}`**"
+            heading = f"Not reached from any entry point in `{module_name(directory)}`"
             blocks = [render(e.fn, limit, link_base, before=e.before, new=e.new) for e in left]
-            sections.append(heading + "\n\n" + "\n\n".join(blocks))
+            sections.append(section(heading, [e.fn for e in left], blocks, limit, fold))
     return "\n\n".join(sections)
 
 
@@ -623,7 +641,9 @@ def touched(old: dict[str, Function], new: list[Function]) -> list[Entry]:
     return found
 
 
-def changed_report(base: str, paths: list[str], limit: int, link_base: str = "") -> str:
+def changed_report(
+    base: str, paths: list[str], limit: int, link_base: str = "", *, fold: bool = False
+) -> str:
     """The functions edited since `base`, each with its whole decision path, on the app's path."""
     entries, removed = [], []
     for path in map(Path, git("diff", "--name-only", base, "--", *paths).splitlines()):
@@ -638,7 +658,7 @@ def changed_report(base: str, paths: list[str], limit: int, link_base: str = "")
         )
     if not entries and not removed:  # nothing to show
         return "No function changed."
-    body = arrange(entries, limit, link_base) if entries else ""
+    body = arrange(entries, limit, link_base, fold=fold) if entries else ""
     return "\n\n".join(part for part in (body, "\n".join(removed)) if part)
 
 

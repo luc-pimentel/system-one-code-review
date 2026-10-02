@@ -92,15 +92,17 @@ def complexity_row(top: tuple[int, str, int] | None, limit: int) -> str:
     return f"| decisions | {status} | {detail} |"
 
 
-def fold(changed: str, limit: int = 50_000) -> str:
-    """The changed functions, folded when there are many and cut when the comment would not fit."""
-    count = sum(line.startswith(("⚪", "🟡", "🔴", "−")) for line in changed.splitlines())
-    if not count:  # nothing changed: one line says so
+def cap(changed: str, limit: int = 50_000) -> str:
+    """The changed functions, cut when the comment would not fit GitHub's 65,536 characters."""
+    if len(changed) <= limit:  # it fits
         return changed
-    if len(changed) > limit:  # GitHub caps a comment at 65,536 characters
-        changed = changed[:limit].rsplit("\n\n", 1)[0] + "\n\n… cut here; the job summary has the full list."
-    state = " open" if count <= 5 else ""
-    return f"<details{state}><summary>{count} functions changed</summary>\n\n{changed}\n\n</details>"
+    return changed[:limit].rsplit("\n\n", 1)[0] + "\n\n… cut here; the job summary has the full list."
+
+
+def shape(changed: str) -> str:
+    """How many functions the list holds, for the section's title line."""
+    count = sum(line.startswith(("⚪", "🟡", "🔴", "−")) for line in changed.splitlines())
+    return f"{count} function" + ("s" if count != 1 else "") if count else "none"
 
 
 def render(
@@ -148,9 +150,10 @@ def render(
             "| --- | --- | --- |",
             *rows,
             "",
-            "**Functions this PR touched**, in the order the app reaches them, each with its decisions as they are now",
+            f"**Functions this PR touched:** {shape(changed)}, by entry point, in the order it reaches them, "
+            "each with its decisions as they are now",
             "",
-            fold(changed),
+            cap(changed),
             "",
             decisions.LEGEND,
             f"Limits: {limits['decisions']} decisions per function (ruff mccabe {limits['complexity']}), "
@@ -176,7 +179,7 @@ def changed_section(env: dict, limits: dict, link_base: str) -> str:
     known = subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], capture_output=True, check=False)
     if not base or known.returncode != 0:  # no base to compare with, as on a push to a new branch
         return "No base commit to compare with."
-    return decisions.changed_report(base, ["src", "scripts"], limits["decisions"], link_base)
+    return decisions.changed_report(base, ["src", "scripts"], limits["decisions"], link_base, fold=True)
 
 
 def build(env: dict, previous: str | None) -> str:
