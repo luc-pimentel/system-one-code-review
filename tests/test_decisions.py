@@ -118,3 +118,26 @@ def test_cli_lists_a_file(capsys):
     out = capsys.readouterr().out
     assert "**`decisions_sample.guarded`**" in out
     assert "**`decisions_sample.Holder.method`**" in out
+
+
+def test_every_edited_function_is_listed_with_its_whole_path(tmp_path):
+    path = tmp_path / "m.py"
+    function = "def {name}({arg}):\n    if {arg}:  # set\n        return {value}\n    return 0\n"
+    old = (
+        function.format(name="same", arg="x", value=1)
+        + "\n\n"
+        + function.format(name="edited", arg="y", value=1)
+    )
+    new = (
+        function.format(name="same", arg="x", value=1)
+        + "\n\n"
+        + function.format(name="edited", arg="y", value=2)
+    )
+    new += "\n\ndef added(z):\n    return z\n"
+    blocks = decisions.compare_file(path, old, new, 10)
+    assert [block.split("\n")[0] for block in blocks] == [
+        "⚪ **`m.edited`** — 2 of 10 decisions",
+        "⚪ **`m.added`** — 1 of 10 decisions, new",
+    ]
+    assert blocks[0].endswith("- + **if** set → ↩ returns `2`  L8\n- − **if** set → ↩ returns `1`  (was L8)")
+    assert decisions.compare_file(path, new, old, 10)[-1] == "− **`m.added`** removed (1 decisions)"

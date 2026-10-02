@@ -60,6 +60,7 @@ class Function:
     line: int
     doc: str
     decisions: list[Decision] = field(default_factory=list)
+    text: str = ""
 
     @property
     def count(self) -> int:
@@ -272,7 +273,9 @@ def functions(path: Path, text: str, *, nested: bool = False) -> list[Function]:
         walker = Walker(src)
         walker.walk(node.body, 0)
         doc = (ast.get_docstring(node) or "").split("\n")[0]
-        found.append(Function(path, name, node.lineno, doc, walker.out))
+        found.append(
+            Function(path, name, node.lineno, doc, walker.out, ast.get_source_segment(text, node) or "")
+        )
     return sorted(found, key=lambda fn: fn.line)
 
 
@@ -344,28 +347,35 @@ def report(paths: list[str], limit: int, link_base: str = "") -> str:
     return "\n\n".join(blocks)
 
 
-def changed_report(base: str, paths: list[str], limit: int, link_base: str = "") -> str:
-    """Only the functions whose decisions differ from `base`, with what was added and removed."""
+def compare_file(path: Path, old_text: str, new_text: str, limit: int, link_base: str = "") -> list[str]:
+    """Every function whose source differs between the two versions, with its whole decision path."""
+    old = {fn.name: fn for fn in functions(path, old_text)}
+    new = functions(path, new_text)
     blocks = []
-    changed = [Path(line) for line in git("diff", "--name-only", base, "--", *paths).splitlines()]
-    for path in changed:
+    for fn in new:
+        before = old.get(fn.name)
+        if before is None:  # the function is new
+            blocks.append(render(fn, limit, link_base, new=True))
+        elif before.text != fn.text:  # the function was edited
+            blocks.append(render(fn, limit, link_base, before=before))
+    names = {fn.name for fn in new}
+    blocks.extend(
+        f"− **`{fn.label}`** removed ({fn.count} decisions)" for name, fn in old.items() if name not in names
+    )
+    return blocks
+
+
+def changed_report(base: str, paths: list[str], limit: int, link_base: str = "") -> str:
+    """The functions edited since `base`, each with its whole decision path and what moved in it."""
+    blocks = []
+    for path in map(Path, git("diff", "--name-only", base, "--", *paths).splitlines()):
         if path.suffix != ".py":  # not Python
             continue
-        old = {fn.name: fn for fn in functions(path, git("show", f"{base}:{path.as_posix()}"))}
-        new = functions(path, path.read_text()) if path.exists() else []
-        for fn in new:
-            before = old.get(fn.name)
-            if before is None:  # the function is new
-                blocks.append(render(fn, limit, link_base, new=True))
-            elif before.keys != fn.keys or before.count != fn.count:  # its decisions moved
-                blocks.append(render(fn, limit, link_base, before=before))
-        names = {fn.name for fn in new}
+        old_text = git("show", f"{base}:{path.as_posix()}")
         blocks.extend(
-            f"− **`{fn.label}`** removed ({fn.count} decisions)"
-            for name, fn in old.items()
-            if name not in names
+            compare_file(path, old_text, path.read_text() if path.exists() else "", limit, link_base)
         )
-    return "\n\n".join(blocks) or "No function changed its decisions."
+    return "\n\n".join(blocks) or "No function changed."
 
 
 def limits(pyproject: Path = Path("pyproject.toml")) -> dict[str, int]:

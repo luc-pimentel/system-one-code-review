@@ -35,7 +35,7 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
         ENV,
         checks(tmp_path),
         None,
-        changed="No function changed its decisions.",
+        changed="No function changed.",
         top=(8, "github.pull_request", 0),
         limits=LIMITS,
     )
@@ -47,7 +47,7 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
     assert "| pytest | ⚪ pass | 81 passed in 0.87s |" in body
     assert "| complexity | 🟡 watch | highest 8 of 10 (`github.pull_request`) |" in body
     assert "**Functions this PR changed**" in body
-    assert "No function changed its decisions." in body
+    assert "No function changed." in body
     assert "Limits: pyproject.toml (mccabe 10, 12 branches, 50 statements). Updated " in body
     assert body.endswith(pr_comment.MARKER)
 
@@ -119,7 +119,7 @@ def test_outside_a_pull_request_only_the_summary_is_written(tmp_path, monkeypatc
 
 def test_many_changed_functions_are_folded_and_a_huge_list_is_cut():
     block = "⚪ **`m.f`** — 2 of 10 decisions\n- **if** x → ↩ returns `1`  L2"
-    assert pr_comment.fold("No function changed its decisions.") == "No function changed its decisions."
+    assert pr_comment.fold("No function changed.") == "No function changed."
     two = pr_comment.fold("\n\n".join([block] * 2))
     assert two.startswith("<details open><summary>2 functions changed</summary>\n\n⚪")
     six = pr_comment.fold("\n\n".join([block] * 6))
