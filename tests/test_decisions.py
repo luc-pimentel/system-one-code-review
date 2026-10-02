@@ -125,7 +125,69 @@ def test_cli_lists_a_file(capsys):
     assert "**`decisions_sample.Holder.method`**" in out
 
 
-def test_every_edited_function_is_listed_with_its_whole_path_and_straight_line_code_is_not(tmp_path):
+APP = ROOT / "tests" / "fixtures" / "app"
+
+
+def app_graph() -> decisions.CallGraph:
+    return decisions.CallGraph(decisions.python_files([str(APP)]))
+
+
+def test_the_call_graph_follows_the_entry_point_in_evaluation_order():
+    graph = app_graph()
+    assert graph.handlers("cli.main") == [("cli.fetch", "fetch"), ("cli.run", "run")]
+    assert list(graph.reach("cli.main")) == [
+        "cli.main",
+        "cli.fetch",
+        "work.download",
+        "cli.run",
+        "work.load",
+        "work.parse",
+        "work.finish",
+    ]
+    assert graph.reach("cli.main")["work.parse"] == ["cli.main", "cli.run", "work.load"]
+    assert graph.edges("cli.run") == ["work.load", "work.finish"]
+
+
+def test_a_package_is_listed_on_the_apps_path_grouped_by_subcommand():
+    entries = [
+        decisions.Entry(fn)
+        for path in decisions.python_files([str(APP)])
+        for fn in decisions.functions(path, path.read_text())
+    ]
+    text = decisions.Layout(app_graph(), "app", "cli.main").render(entries, 9)
+    headings = [line for line in text.splitlines() if line.startswith("**")]
+    assert headings == ["**`app`**", "**`app fetch`**", "**`app run`**", "**Not reached from `app`**"]
+    labels = [line.split("`")[1] for line in text.splitlines() if line.startswith(("⚪", "🟡", "🔴"))]
+    assert labels == [
+        "cli.main",
+        "cli.fetch",
+        "work.download",
+        "cli.run",
+        "work.load",
+        "work.parse",
+        "work.finish",
+        "work.unused",
+    ]
+    assert "⚪ **`work.download`** — 1 of 9 decisions · also under `app run`" in text
+    assert "⚪ **`work.parse`** — 1 of 9 decisions · via `work.load`" in text
+    assert "⚪ **`work.load`** — 2 of 9 decisions\n" in text
+
+
+def test_one_file_is_listed_top_to_bottom_and_a_package_on_the_path(monkeypatch, capsys):
+    monkeypatch.chdir(APP)
+    monkeypatch.setattr(decisions, "entry_point", lambda pyproject=None: ("app", ["app", "cli"], "main"))
+    assert decisions.main(["work.py", "--limit", "9"]) == 0
+    file_order = [
+        line.split("`")[1] for line in capsys.readouterr().out.splitlines() if line.startswith(("⚪", "🟡"))
+    ]
+    assert file_order == ["work.download", "work.parse", "work.load", "work.finish", "work.unused"]
+    assert decisions.main([".", "--limit", "9"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("**`app`**\n\n⚪ **`cli.main`** — no decisions")
+    assert "**Not reached from any entry point in `app`**\n\n⚪ **`work.unused`**" in out
+
+
+def test_touched_functions_keep_their_whole_path_and_straight_line_code_is_left_out(tmp_path):
     path = tmp_path / "m.py"
     function = "def {name}({arg}):\n    if {arg}:  # set\n        return {value}\n    return 0\n"
     old = (
@@ -139,9 +201,48 @@ def test_every_edited_function_is_listed_with_its_whole_path_and_straight_line_c
         + function.format(name="edited", arg="y", value=2)
     )
     new += "\n\ndef added(z):\n    return z\n"
-    blocks = decisions.compare_file(path, old, new, 9)
-    assert [block.split("\n")[0] for block in blocks] == ["⚪ **`m.edited`** — 1 of 9 decisions"]
-    assert blocks[0].endswith("- **if** set → ↩ returns `2`  L8")
-    assert decisions.compare_file(path, new, old, 9)[-1] == "− **`m.added`** removed (0 decisions)"
-    emptied = decisions.compare_file(path, new, new.replace("    if y:  # set\n        return 2\n", ""), 9)
-    assert emptied == ["⚪ **`m.edited`** — no decisions (was 1)"]
+    before = {fn.name: fn for fn in decisions.functions(path, old)}
+    entries = decisions.touched(before, decisions.functions(path, new))
+    assert [(e.fn.name, e.new, e.before is not None) for e in entries] == [("edited", False, True)]
+    assert decisions.render(entries[0].fn, 9, before=entries[0].before).endswith(
+        "- **if** set → ↩ returns `2`  L8"
+    )
+    emptied = decisions.touched(
+        before, decisions.functions(path, old.replace("    if y:  # set\n        return 1\n", ""))
+    )
+    assert [decisions.render(e.fn, 9, before=e.before) for e in emptied] == [
+        "⚪ **`m.edited`** — no decisions (was 1)"
+    ]
+
+
+def test_scripts_are_grouped_by_their_main_and_the_rest_comes_last(monkeypatch):
+    monkeypatch.setattr(decisions, "entry_point", lambda pyproject=None: None)
+    tools = ROOT / "tests" / "fixtures" / "tools"
+    entries = [
+        decisions.Entry(fn) for path in decisions.python_files([str(tools)]) for fn in functions_of(path)
+    ]
+    text = decisions.arrange(entries, 9)
+    assert text.split("\n\n")[:3] == [
+        "**`python -m tests.fixtures.tools.one`**",
+        "⚪ **`one.main`** — 1 of 9 decisions\n- **if** arguments were given → ↩ returns `two.count(argv)`  L7",
+        "⚪ **`two.count`** — 2 of 9 decisions\n- **for each** item  L6\n  - **if** a real item  L7",
+    ]
+    assert "**Not reached from any entry point in `tests.fixtures.tools`**\n\n⚪ **`one.spare`**" in text
+
+
+def functions_of(path):
+    return decisions.functions(path, path.read_text())
+
+
+def test_folded_sections_carry_the_shape_in_their_summary():
+    entries = [
+        decisions.Entry(fn) for path in decisions.python_files([str(APP)]) for fn in functions_of(path)
+    ]
+    text = decisions.Layout(app_graph(), "app", "cli.main").render(entries, 9, fold=True)
+    assert text.startswith(
+        "<details><summary><b><code>app</code></b> — 1 function</summary>\n\n⚪ **`cli.main`**"
+    )
+    assert "<details><summary><b><code>app run</code></b> — 4 functions</summary>" in text
+    assert "<details><summary><b>Not reached from <code>app</code></b> — 1 function</summary>" in text
+    tight = decisions.Layout(app_graph(), "app", "cli.main").render(entries, 1, fold=True)
+    assert "<b><code>app run</code></b> — 4 functions, 1 🔴, 3 🟡</summary>" in tight
