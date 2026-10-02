@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from s1cr import questions
 from s1cr.swrbench import CATEGORIES, FileDiff, Row
 
@@ -32,3 +35,25 @@ def test_jev_reads_the_pull_request_and_nothing_from_its_review():
     assert set(state) == {"pr_title", "pr_description", "files"}
     assert len(state["pr_description"]) == questions.MAX_DESCRIPTION_CHARS
     assert state["files"] == {"f0": {"path": "a.py", "diff": "@@ -1 +1 @@\n+x = 1"}}
+
+
+def test_v1_request_stays_identical_to_the_original_benchmark():
+    original = Row(
+        "o__r-1",
+        "o/r",
+        "2020",
+        "Add tax",
+        "d" * 10_000,
+        [
+            FileDiff("a.py", "@@ -1 +1 @@\n-old\n+new", 2),
+            FileDiff("space name.py", "@@ -0,0 +1 @@\n+test()", 1),
+        ],
+        True,
+        categories=["F.2"],
+        fault_files=["a.py"],
+    )
+    request = questions.request(original.review_input(), "jev-1.13.0")
+    # Captured from the pre-extraction implementation: wording, criteria, order of
+    # file options, state shape, and description truncation are all part of v1.
+    digest = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+    assert digest == "bd299b14c0281588d76836f82eeb755da886b0b9d43f1c4414637556ce8ab775"

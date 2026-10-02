@@ -1,10 +1,15 @@
-"""Command line: `s1cr fetch | build | run | score`, run from the repo root."""
+"""Review a GitHub PR, or run and score the SWR-Bench evaluation."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 
+import httpx
+
 from . import github, jev, swrbench
+from .models import DEFAULT_MODEL, ReviewConfig
+from .presentation import document, readable
 
 DATA = Path("data")
 SOURCE = DATA / "swrbench" / "swr_datasets_d5c5.jsonl"
@@ -12,7 +17,6 @@ COMPARE_CACHE = DATA / "compare"
 ROWS = DATA / "rows.jsonl"
 RUNS = Path("runs")
 REPORT = Path("reports/jev-swrbench.md")
-DEFAULT_MODEL = "jev-latest"
 
 
 def load_rows(path: Path = ROWS) -> list[swrbench.Row]:
@@ -40,6 +44,12 @@ def main(argv: list[str] | None = None) -> None:
     run_cmd.add_argument("--workers", type=int, default=4)
     score_cmd = commands.add_parser("score", help="score every run and write reports/jev-swrbench.md")
     score_cmd.add_argument("--primary", default="r1", help="the run the headline numbers come from")
+    review_cmd = commands.add_parser("review", help="review the current diff of a GitHub pull request")
+    review_cmd.add_argument("url", help="https://github.com/owner/repo/pull/123")
+    review_cmd.add_argument("--model", default=DEFAULT_MODEL, help=f"Jev model (default {DEFAULT_MODEL})")
+    review_cmd.add_argument(
+        "--json", action="store_true", help="print raw answers, metadata, and option mappings as JSON"
+    )
     args = parser.parse_args(argv)
 
     if args.command == "fetch":
@@ -69,3 +79,12 @@ def main(argv: list[str] | None = None) -> None:
 
         write_report(score(load_rows(), RUNS, args.primary), REPORT)
         print(f"wrote {REPORT}")
+    elif args.command == "review":
+        try:
+            github.parse_pr_url(args.url)
+            key = api_key()
+            pr = github.pull_request(args.url)
+            result = jev.review(pr.input, ReviewConfig(model=args.model), api_key=key)
+        except (github.GitHubError, jev.JevError, httpx.HTTPError, ValueError) as error:
+            raise SystemExit(f"error: {error}") from error
+        print(json.dumps(document(pr, result), ensure_ascii=False) if args.json else readable(pr, result))

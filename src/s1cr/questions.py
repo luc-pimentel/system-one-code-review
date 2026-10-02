@@ -5,10 +5,72 @@ probability of yes), two are Choice questions (a probability for each option). T
 counts as yes, and describe each option; the category definitions are SWR-Bench's own.
 """
 
-from .swrbench import CATEGORIES, Row
+from .models import ReviewInput
 
 VERSION = "v1"
 MAX_DESCRIPTION_CHARS = 6000
+
+# SWR-Bench's categories, with the definitions its annotators worked from (swrbench/collect_pr_review.py).
+# E is evolvability: the code works, but could be clearer or better built. F is functional: it does not work.
+CATEGORIES: dict[str, tuple[str, str]] = {
+    "E.1.1": (
+        "Textual Changes",
+        "Adjustments to comments (e.g., adding, correcting, clarifying) or identifier names (variables, "
+        "functions, classes) for better clarity and consistency.",
+    ),
+    "E.1.2": (
+        "Language Features",
+        "Utilizing language-specific constructs (e.g., `final` in Java, type annotations, access modifiers) "
+        "primarily to convey developer intent, constraints, or information, rather than for functional impact.",
+    ),
+    "E.2": (
+        "Visual Representation",
+        "Modifications to code formatting and layout, such as indentation, spacing, line breaks, or bracket "
+        "placement, to improve visual clarity and adhere to style conventions.",
+    ),
+    "E.3.1": (
+        "Organization",
+        "Reorganizing code elements, such as removing dead (unused) code, moving functions or classes to more "
+        "appropriate locations, or restructuring files/packages for better modularity.",
+    ),
+    "E.3.2": (
+        "Solution Approach",
+        "Modifying the internal implementation details or algorithms (e.g., refactoring for clarity/efficiency, "
+        "updating function usage to newer patterns), or adding supporting code like tests, without altering the "
+        "observable functionality.",
+    ),
+    "F.1": (
+        "Interface",
+        "Fixes related to how different code components interact, including incorrect method calls, wrong "
+        "parameter types/values, violated API contracts, or incorrect event handling.",
+    ),
+    "F.2": (
+        "Logic",
+        "Corrections to errors in algorithms, conditional statements (if/else), loops, computations, or other "
+        "logical constructs leading to incorrect behavior.",
+    ),
+    "F.3": (
+        "Resource",
+        "Fixes concerning the management of data, variables, or system resources, including initialization "
+        "errors, memory leaks, improper resource release/acquisition, or incorrect data manipulation (e.g., "
+        "concurrency issues).",
+    ),
+    "F.4": (
+        "Check",
+        "Adding or modifying validation or checks (e.g., null checks, boundary checks, state validation) for "
+        "variables, parameters, or function return values to handle potential errors or invalid states correctly.",
+    ),
+    "F.5": (
+        "Support",
+        "Corrections related to the interaction with external systems, libraries, frameworks, or APIs (e.g., "
+        "incorrect usage, adapting to API changes, version incompatibilities).",
+    ),
+    "F.6": (
+        "Larger Defects",
+        "Significant functional fixes that often span multiple files or components, address incompletely "
+        "implemented features, fix major inconsistencies (like GUI behavior), or require broader system knowledge.",
+    ),
+}
 
 CHANGES_REQUESTED = {
     "type": "noul",
@@ -59,7 +121,7 @@ FAULT_FILE_INSTRUCTIONS = (
 )
 
 
-def fault_file(row: Row) -> dict:
+def fault_file(row: ReviewInput) -> dict:
     """Asked when a pull request changes more than one file; each option is a file's path."""
     return {
         "type": "choice",
@@ -68,7 +130,7 @@ def fault_file(row: Row) -> dict:
     }
 
 
-def state(row: Row) -> dict:
+def state(row: ReviewInput) -> dict:
     """What Jev reads: the title, the description and the diff of each file. Nothing from the review."""
     return {
         "pr_title": row.title,
@@ -77,7 +139,7 @@ def state(row: Row) -> dict:
     }
 
 
-def questions(row: Row) -> dict:
+def questions(row: ReviewInput) -> dict:
     asked = {
         "changes_requested": CHANGES_REQUESTED,
         "functional_defect": FUNCTIONAL_DEFECT,
@@ -88,5 +150,5 @@ def questions(row: Row) -> dict:
     return asked
 
 
-def request(row: Row, model: str) -> dict:
+def request(row: ReviewInput, model: str) -> dict:
     return {"model": model, "state": state(row), "questions": questions(row)}
