@@ -11,7 +11,7 @@ ENV = {
     "HEAD_SHA": "c738d3a" + "0" * 33,
     "STEP_RESULTS": "ruff=success format=success tests=success",
 }
-LIMITS = {"decisions": 10, "branches": 12, "statements": 50}
+LIMITS = {"complexity": 10, "decisions": 9, "branches": 12, "statements": 50}
 PREVIOUS = (
     "🟢 **Checks:** pass. 0 ruff findings, 81 passed on `abc1234` ([run](https://github.com/o/r/actions/runs/6)).\n"
     "First run.\n<!-- checks -->"
@@ -36,7 +36,7 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
         checks(tmp_path),
         None,
         changed="No function changed.",
-        top=(8, "github.pull_request", 0),
+        top=(7, "github.pull_request", 0),
         limits=LIMITS,
     )
     assert body.startswith(
@@ -45,10 +45,10 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
     assert "| ruff check | ⚪ pass | 0 findings |" in body
     assert "| ruff format | ⚪ pass | 22 files already formatted |" in body
     assert "| pytest | ⚪ pass | 81 passed in 0.87s |" in body
-    assert "| complexity | 🟡 watch | highest 8 of 10 (`github.pull_request`) |" in body
+    assert "| decisions | 🟡 watch | highest 7 of 9 (`github.pull_request`) |" in body
     assert "**Functions this PR touched**" in body
     assert "No function changed." in body
-    assert "Limits: pyproject.toml (mccabe 10, 12 branches, 50 statements). Updated " in body
+    assert "Limits: 9 decisions per function (ruff mccabe 10), 12 branches, 50 statements. Updated " in body
     assert body.endswith(pr_comment.MARKER)
 
 
@@ -66,7 +66,7 @@ def test_failures_count_findings_and_compare_with_the_previous_run(tmp_path):
     )
     assert "| ruff check | 🔴 fail | 2 findings |" in body
     assert "| pytest | 🔴 fail | 1 failed, 80 passed in 0.90s |" in body
-    assert "| complexity | 🟡 watch | highest 3 of 10 (`a.f`), 2 decisions without a phrase |" in body
+    assert "| decisions | 🟡 watch | highest 3 of 9 (`a.f`), 2 decisions without a phrase |" in body
 
 
 def test_steps_that_did_not_run_are_shown_as_such(tmp_path):
@@ -74,7 +74,7 @@ def test_steps_that_did_not_run_are_shown_as_such(tmp_path):
     body = pr_comment.render(env, tmp_path, None, changed="x", top=None, limits=LIMITS)
     assert body.startswith("🔴 **Checks:** fail. 0 ruff findings, no test result on `c738d3a`")
     assert "| ruff check | ⚫ not run | 0 findings |" in body
-    assert "| complexity | ⚫ not run | |" in body
+    assert "| decisions | ⚫ not run | |" in body
 
 
 def test_comment_is_created_once_and_then_updated(monkeypatch):
@@ -113,7 +113,7 @@ def test_outside_a_pull_request_only_the_summary_is_written(tmp_path, monkeypatc
     assert "No pull request in this event; summary only." in capsys.readouterr().out
     text = summary.read_text()
     assert text.startswith("🟢 **Checks:** pass.")
-    assert "| complexity | " in text
+    assert "| decisions | " in text
     assert text.rstrip().endswith(pr_comment.MARKER)
 
 

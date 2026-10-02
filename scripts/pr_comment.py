@@ -78,7 +78,7 @@ def previous_run(body: str | None) -> dict | None:
 
 def complexity_row(top: tuple[int, str, int] | None, limit: int) -> str:
     if top is None:  # the source could not be analysed
-        return "| complexity | ⚫ not run | |"
+        return "| decisions | ⚫ not run | |"
     count, label, missing = top
     if count > limit:  # ruff fails this
         status = "🔴 over"
@@ -89,7 +89,7 @@ def complexity_row(top: tuple[int, str, int] | None, limit: int) -> str:
     detail = f"highest {count} of {limit} (`{label}`)" + (
         f", {missing} decisions without a phrase" if missing else ""
     )
-    return f"| complexity | {status} | {detail} |"
+    return f"| decisions | {status} | {detail} |"
 
 
 def fold(changed: str, limit: int = 50_000) -> str:
@@ -153,8 +153,8 @@ def render(
             fold(changed),
             "",
             decisions.LEGEND,
-            f"Limits: pyproject.toml (mccabe {limits['decisions']}, {limits['branches']} branches, "
-            f"{limits['statements']} statements). Updated {stamp}.",
+            f"Limits: {limits['decisions']} decisions per function (ruff mccabe {limits['complexity']}), "
+            f"{limits['branches']} branches, {limits['statements']} statements. Updated {stamp}.",
             MARKER,
         ]
     )

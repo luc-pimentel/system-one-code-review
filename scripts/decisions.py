@@ -59,7 +59,12 @@ class Function:
 
     @property
     def count(self) -> int:
-        return 1 + sum(d.counted for d in self.decisions)
+        return sum(d.counted for d in self.decisions)
+
+    @property
+    def complexity(self) -> int:
+        """What ruff's C901 reports: the decisions plus one for the function itself."""
+        return self.count + 1
 
     @property
     def missing(self) -> int:
@@ -291,7 +296,7 @@ def render(
     fn: Function, limit: int, link_base: str = "", *, before: Function | None = None, new: bool = False
 ) -> str:
     """One function as a markdown outline: a header line, then one bullet per decision, as it is now."""
-    counts = f"{fn.count} of {limit} decisions"
+    counts = f"{fn.count} of {limit} decisions" if fn.count else "no decisions"
     if before is not None and before.count != fn.count:  # the count moved since the base revision
         counts += f" (was {before.count})"
     header = f"{mark(fn, limit)} **`{fn.label}`** — {counts}"
@@ -334,6 +339,8 @@ def compare_file(path: Path, old_text: str, new_text: str, limit: int, link_base
     blocks = []
     for fn in new:
         before = old.get(fn.name)
+        if not fn.count and not (before and before.count):  # straight-line code: nothing to glance at
+            continue
         if before is None:  # the function is new
             blocks.append(render(fn, limit, link_base, new=True))
         elif before.text != fn.text:  # the function was edited
@@ -359,12 +366,14 @@ def changed_report(base: str, paths: list[str], limit: int, link_base: str = "")
 
 
 def limits(pyproject: Path = Path("pyproject.toml")) -> dict[str, int]:
-    """The limits ruff enforces, from pyproject.toml: mccabe decisions, pylint branches and statements."""
+    """The limits ruff enforces, from pyproject.toml; decisions are mccabe's complexity minus one."""
     lint: dict = {}
     if pyproject.exists():  # the project configures ruff
         lint = tomllib.loads(pyproject.read_text()).get("tool", {}).get("ruff", {}).get("lint", {})
+    complexity = lint.get("mccabe", {}).get("max-complexity", 10)
     return {
-        "decisions": lint.get("mccabe", {}).get("max-complexity", 10),
+        "complexity": complexity,
+        "decisions": complexity - 1,
         "branches": lint.get("pylint", {}).get("max-branches", 12),
         "statements": lint.get("pylint", {}).get("max-statements", 50),
     }
@@ -376,7 +385,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--changed", metavar="BASE", help="only functions whose decisions differ from this revision"
     )
-    parser.add_argument("--limit", type=int, default=limits()["decisions"], help="ruff's mccabe limit")
+    parser.add_argument(
+        "--limit", type=int, default=limits()["decisions"], help="most decisions a function may have"
+    )
     parser.add_argument("--link-base", default="", help="URL prefix that turns line numbers into links")
     args = parser.parse_args(argv)
     if args.changed:  # compare with a Git revision
