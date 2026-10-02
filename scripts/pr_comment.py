@@ -99,10 +99,17 @@ def cap(changed: str, limit: int = 50_000) -> str:
     return changed[:limit].rsplit("\n\n", 1)[0] + "\n\n… cut here; the job summary has the full list."
 
 
-def shape(changed: str) -> str:
-    """How many functions the list holds, for the section's title line."""
+def fold(changed: str) -> str:
+    """The whole list behind one fold that names its size; each entry point folds again inside it."""
     count = sum(line.startswith(("⚪", "🟡", "🔴", "−")) for line in changed.splitlines())
-    return f"{count} function" + ("s" if count != 1 else "") if count else "none"
+    if not count:  # nothing changed: one line says so
+        return changed
+    entry_points = changed.count("<details><summary>")
+    summary = f"{count} function" + ("s" if count != 1 else "")
+    if entry_points:  # the inner folds are entry points
+        summary += f" in {entry_points} entry point" + ("s" if entry_points != 1 else "")
+    state = " open" if count <= 5 else ""
+    return f"<details{state}><summary>{summary}</summary>\n\n{changed}\n\n</details>"
 
 
 def render(
@@ -150,10 +157,10 @@ def render(
             "| --- | --- | --- |",
             *rows,
             "",
-            f"**Functions this PR touched:** {shape(changed)}, by entry point, in the order it reaches them, "
+            "**Functions this PR touched**, by entry point, in the order it reaches them, "
             "each with its decisions as they are now",
             "",
-            cap(changed),
+            fold(cap(changed)),
             "",
             decisions.LEGEND,
             f"Limits: {limits['decisions']} decisions per function (ruff mccabe {limits['complexity']}), "

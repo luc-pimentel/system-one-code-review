@@ -46,7 +46,7 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
     assert "| ruff format | ⚪ pass | 22 files already formatted |" in body
     assert "| pytest | ⚪ pass | 81 passed in 0.87s |" in body
     assert "| decisions | 🟡 watch | highest 7 of 9 (`github.pull_request`) |" in body
-    assert "**Functions this PR touched:** none, by entry point" in body
+    assert "**Functions this PR touched**, by entry point" in body
     assert "No function changed." in body
     assert "Limits: 9 decisions per function (ruff mccabe 10), 12 branches, 50 statements. Updated " in body
     assert body.endswith(pr_comment.MARKER)
@@ -117,11 +117,21 @@ def test_outside_a_pull_request_only_the_summary_is_written(tmp_path, monkeypatc
     assert text.rstrip().endswith(pr_comment.MARKER)
 
 
-def test_the_list_is_counted_and_a_huge_one_is_cut():
+def test_the_list_folds_once_more_around_the_entry_points_and_a_huge_one_is_cut():
     block = "⚪ **`m.f`** — 2 of 9 decisions\n- **if** x → ↩ returns `1`  L2"
-    assert pr_comment.shape("No function changed.") == "none"
-    assert pr_comment.shape("\n\n".join([block] * 2)) == "2 functions"
-    assert pr_comment.cap("\n\n".join([block] * 6)).count("**`m.f`**") == 6
+    assert pr_comment.fold("No function changed.") == "No function changed."
+    two = pr_comment.fold("\n\n".join([block] * 2))
+    assert two.startswith("<details open><summary>2 functions</summary>\n\n⚪")
+    grouped = (
+        "<details><summary><b><code>app run</code></b> — 6 functions</summary>\n\n"
+        + "\n\n".join([block] * 6)
+        + "\n\n</details>"
+    )
+    six = pr_comment.fold(grouped)
+    assert six.startswith(
+        "<details><summary>6 functions in 1 entry point</summary>\n\n<details><summary><b><code>app run</code>"
+    )
+    assert six.endswith("</details>\n\n</details>")
     cut = pr_comment.cap("\n\n".join([block] * 6), limit=len(block) * 3)
     assert cut.count("**`m.f`**") < 6
     assert "… cut here; the job summary has the full list." in cut
