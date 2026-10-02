@@ -85,10 +85,67 @@ Needs [uv](https://docs.astral.sh/uv/), a logged-in GitHub CLI (for the compare 
 uv sync
 uv run s1cr fetch                                     # SWR-Bench into data/
 uv run s1cr build                                     # data/rows.jsonl, one row per pull request
-TYPESAFE_API_KEY=... uv run s1cr run r1 --model jev-1.13.0
-uv run s1cr score                                     # reports/jev-swrbench.md
+TYPESAFE_API_KEY=... uv run s1cr run baseline --model jev-1.13.0
+uv run s1cr score --primary baseline                  # reports/jev-swrbench.md
 uv run pytest
 ```
 
-`runs/<name>/answers.jsonl` keeps every raw answer, so `score` needs no API calls. A run that stops can be
-started again with the same name and picks up where it left off.
+`runs/<name>/answers.jsonl` keeps every raw answer, so `score` needs no API calls. New runs also save
+`run.json`: the source Git commit, pinned model, question version, worker count, UTC creation time, exact
+selected/eligible PR IDs, and a SHA-256 fingerprint of their inputs and labels. Git is the implementation's
+version; run names identify executions, including repeated executions of the same commit.
+
+Benchmark runs require committed source and an explicit pinned `--model` such as `jev-1.13.0`.
+`jev-latest` remains available for live reviews. Git state is read from the checkout containing the
+executed `s1cr` code, including detached worktrees. Changes under `runs/`, `reports/`, and `data/` are
+excluded from the clean-source check so saved results do not block another run.
+
+Repeat the same command to resume an interrupted run. The commit, model, selected cases, inputs, labels,
+and worker count must still match the receipt; changing any of them requires a new run name. Failed cases
+are retried, successful cases are skipped, and any failed calls produce a nonzero exit status. Jev must
+return the requested model version for an answer to count as successful.
+
+The historical `r1`, `r2`, and `r3` remain readable with `s1cr score`. They have no Git receipts and cannot
+be resumed or used in the new comparison command; start fresh recorded runs rather than invent their
+provenance. `score` groups new repeatability runs by matching commit and execution settings, separately
+from historical runs.
+
+## Compare Git revisions
+
+Commit the candidate implementation on an experiment branch. Use normal Git worktrees for separate
+baseline and candidate checkouts:
+
+```sh
+git worktree add --detach ../s1cr-baseline <baseline-sha>
+git worktree add --detach ../s1cr-candidate <candidate-sha>
+```
+
+Both revisions must support recorded runs. In each checkout, install its locked dependencies with
+`uv sync --locked`, prepare the same benchmark rows with `s1cr fetch` / `s1cr build`, and run:
+
+```sh
+uv run --locked s1cr run trial --model jev-1.13.0
+```
+
+Then compare their saved run directories from one evaluator checkout:
+
+```sh
+uv run s1cr compare ../s1cr-baseline/runs/trial ../s1cr-candidate/runs/trial
+uv run s1cr compare baseline candidate --json
+```
+
+Arguments can be names under `runs/` or paths to run directories. `--rows /path/to/rows.jsonl` selects
+the benchmark inputs and labels (default `data/rows.jsonl`). The comparison verifies their fingerprint
+against both receipts and evaluates both sets of raw answers with the current evaluator; its Git commit
+and dirty status are included in the output. Comparing requires no API key or network calls.
+
+The table shows functional-defect AUROC, accuracy at 0.5, Brier score, changes-requested AUROC,
+category/file accuracy on their eligible subsets, latency, token counts, and estimated input cost.
+Delta means candidate minus baseline. Cost uses the same quoted input price as the original report;
+output tokens and failed/retried calls are not priced.
+
+Completion, failed, pending, and excluded counts are always shown. Scores, latency, and cost use only
+PRs answered by both runs, with each metric's case count displayed. JSON also includes the matched IDs
+and IDs answered by only one run. Empty subsets and undefined metrics are `null` in JSON / `n/a` in text.
+Use this command for small or unfinished trials as well as full runs; a lower completion rate remains
+visible alongside quality on the matched cases.

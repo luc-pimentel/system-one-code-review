@@ -81,8 +81,11 @@ def done(output: Path) -> set[str]:
 def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int = 4) -> tuple[int, int]:
     """Ask every row's questions once, appending one JSON line per answer to `output`. A rerun picks up
     where the last one stopped. Returns how many calls succeeded and failed."""
-    output.parent.mkdir(parents=True, exist_ok=True)
-    todo = [row for row in rows if row.excluded is None and row.id not in done(output)]
+    from .provenance import prepare
+
+    prepare(output.parent, rows, model, workers)
+    completed = done(output)
+    todo = [row for row in rows if row.excluded is None and row.id not in completed]
     lock = threading.Lock()
     ok = failed = 0
     config = ReviewConfig(model=model)
@@ -90,6 +93,14 @@ def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int 
     def ask(client: httpx.Client, row: "Row") -> dict:
         try:
             result = review(row.review_input(), config, api_key=api_key, client=client)
+            if result.model != model:
+                return {
+                    "id": row.id,
+                    "error": f"requested model {model}, but Jev returned {result.model}",
+                    "model": result.model,
+                    "usage": result.usage,
+                    "ms": result.ms,
+                }
         except (JevError, httpx.HTTPError, ValueError) as error:
             return {"id": row.id, "error": str(error)}
         return {"id": row.id, **result.to_dict()}
