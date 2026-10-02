@@ -27,7 +27,8 @@ def test_receipt_identifies_exact_inputs_and_resumes_without_rewriting(tmp_path,
     receipt = provenance.prepare(tmp_path, rows, "jev-1.13.0", 4)
     original = (tmp_path / "run.json").read_bytes()
     assert receipt["git_commit"] == "a" * 40
-    assert receipt["case_ids"] == ["a", "b"] and receipt["eligible_ids"] == ["a"]
+    assert receipt["case_ids"] == ["a", "b"]
+    assert receipt["eligible_ids"] == ["a"]
     assert receipt["dataset"]["rows_sha256"] == provenance.rows_hash(rows)
     assert provenance.prepare(tmp_path, rows, "jev-1.13.0", 4) == receipt
     assert (tmp_path / "run.json").read_bytes() == original

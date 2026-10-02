@@ -38,10 +38,13 @@ def shown(name: str, value: float) -> str:
 
 
 def wording(question: dict) -> list[str]:
+    criteria = question.get("criteria", {})
     lines = [f"> {question['instructions']}"]
-    for answer in ("true", "false"):
-        if answer in question.get("criteria", {}):
-            lines.append(f">\n> *{'Yes' if answer == 'true' else 'No'}:* {question['criteria'][answer]}")
+    lines.extend(
+        f">\n> *{'Yes' if answer == 'true' else 'No'}:* {criteria[answer]}"
+        for answer in ("true", "false")
+        if answer in criteria
+    )
     return lines
 
 
@@ -108,6 +111,32 @@ def choice_section(out: list[str], c: Choice, question: dict, asked: str) -> Non
         add("")
 
 
+def data_section(out: list[str], r: Results) -> None:
+    add = out.append
+    add("## 1. The data\n")
+    eras = ", ".join(f"{n} from {era}" for era, n in sorted(r.eras.items()))
+    add(
+        f"SWR-Bench holds {r.total} pull requests from 12 Python projects. {r.kept} are scored ({eras}); "
+        f"{r.total - r.kept} are left out:\n"
+    )
+    for reason, n in sorted(r.excluded.items(), key=lambda item: -item[1]):
+        add(f"- {n}: {reason}")
+    add("")
+    add(
+        "Jev sees each pull request as its first reviewer did: the title, the description (up to "
+        f"{questions.MAX_DESCRIPTION_CHARS:,} characters) and the diff of every file, as of the last commit "
+        "before the first review. It never sees the review, the later commits or the fixes. GitHub's own diff "
+        "of a pull request shows its final state, fixes included, so for pull requests with several commits "
+        "the reviewed diff comes from comparing the base commit with the last commit before the review.\n"
+    )
+    add(
+        "The labels are what the reviewers asked for. A pull request counts as *changes requested* when a "
+        "reviewer asked for at least one change the author then made; SWR-Bench's annotators sorted each "
+        "request into functional (the code does not work) or evolvability (it works, but could be clearer or "
+        "better built) categories.\n"
+    )
+
+
 def write_report(r: Results, output: Path) -> None:
     out: list[str] = []
     add = out.append
@@ -155,28 +184,7 @@ def write_report(r: Results, output: Path) -> None:
     add("")
 
     findings(out, r)
-    add("## 1. The data\n")
-    eras = ", ".join(f"{n} from {era}" for era, n in sorted(r.eras.items()))
-    add(
-        f"SWR-Bench holds {r.total} pull requests from 12 Python projects. {r.kept} are scored ({eras}); "
-        f"{r.total - r.kept} are left out:\n"
-    )
-    for reason, n in sorted(r.excluded.items(), key=lambda item: -item[1]):
-        add(f"- {n}: {reason}")
-    add("")
-    add(
-        "Jev sees each pull request as its first reviewer did: the title, the description (up to "
-        f"{questions.MAX_DESCRIPTION_CHARS:,} characters) and the diff of every file, as of the last commit "
-        "before the first review. It never sees the review, the later commits or the fixes. GitHub's own diff "
-        "of a pull request shows its final state, fixes included, so for pull requests with several commits "
-        "the reviewed diff comes from comparing the base commit with the last commit before the review.\n"
-    )
-    add(
-        "The labels are what the reviewers asked for. A pull request counts as *changes requested* when a "
-        "reviewer asked for at least one change the author then made; SWR-Bench's annotators sorted each "
-        "request into functional (the code does not work) or evolvability (it works, but could be clearer or "
-        "better built) categories.\n"
-    )
+    data_section(out, r)
 
     add("## 2. Would a reviewer ask for changes?\n")
     binary_section(out, r.changes, questions.CHANGES_REQUESTED)
@@ -275,7 +283,7 @@ def findings(out: list[str], r: Results) -> None:
     add("## What the numbers say\n")
 
     def ranking(b: Binary) -> str:
-        low, high = b.auroc_ci
+        low, _high = b.auroc_ci
         if low > 0.5:
             return (
                 f"ranks them above chance but not by much (AUROC {b.auroc:.2f})"

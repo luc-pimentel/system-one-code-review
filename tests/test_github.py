@@ -35,7 +35,9 @@ def gh_responses(monkeypatch, *responses):
 def test_fetches_all_pages_preserves_paths_and_records_the_reviewed_commits(monkeypatch):
     commands = gh_responses(monkeypatch, PR, [[FILES[0]], [FILES[1]]], PR)
     pr = github.pull_request(URL + "/files?diff=split#diff-1")
-    assert pr.url == URL and pr.head_sha == "h" * 40 and pr.base_sha == "b" * 40
+    assert pr.url == URL
+    assert pr.head_sha == "h" * 40
+    assert pr.base_sha == "b" * 40
     assert pr.input == ReviewInput(
         "Fix tax",
         "Handle the empty case.",

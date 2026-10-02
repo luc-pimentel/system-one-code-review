@@ -60,13 +60,17 @@ def test_scoring_counts_what_was_asked_and_leaves_out_what_could_not_be(runs, tm
     assert (results.total, results.kept) == (10, 8)
     assert results.excluded == {"a merge commit": 1, "over Jev's token limit": 1}
     assert results.model == "jev-1.13.0"
-    assert results.changes.auroc == 1.0 and results.changes.accuracy == 1.0
-    assert results.functional.positives == 2 and results.functional.auroc == 1.0
+    assert results.changes.auroc == 1.0
+    assert results.changes.accuracy == 1.0
+    assert results.functional.positives == 2
+    assert results.functional.auroc == 1.0
     assert results.functional_vs_clean.n == 6  # the two evolvability-only pull requests are left out
     # r-check is F.4 but gets F2, r-text is E.1.1 and gets E11; r-org has two problems, so it is not scored
-    assert results.problem_type.n == 3 and results.problem_type.accuracy == pytest.approx(2 / 3)
+    assert results.problem_type.n == 3
+    assert results.problem_type.accuracy == pytest.approx(2 / 3)
     # f1 is b.py: right for r-logic, wrong for r-text
-    assert results.fault_file.n == 2 and results.fault_file.accuracy == 0.5
+    assert results.fault_file.n == 2
+    assert results.fault_file.accuracy == 0.5
     stable = results.stability
     assert stable.runs == ["r1", "r2"]
     assert stable.mean_change["changes_requested"] == pytest.approx(
@@ -74,7 +78,8 @@ def test_scoring_counts_what_was_asked_and_leaves_out_what_could_not_be(runs, tm
     )  # 0.8 stops at 1.0
     assert stable.flips["changes_requested"] == 0  # 0.2 + 0.25 is still no
     assert stable.flips["functional_defect"] == pytest.approx(6 / 8)  # 0.3 + 0.25 turns no into yes
-    assert results.cost.calls == 8 and results.cost.input_tokens == 8000
+    assert results.cost.calls == 8
+    assert results.cost.input_tokens == 8000
 
 
 def test_the_report_is_written(runs, tmp_path):

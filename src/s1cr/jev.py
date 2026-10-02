@@ -41,7 +41,7 @@ def call(client: httpx.Client, request: dict, api_key: str, attempts: int = 3) -
 
 
 def review(
-    input: ReviewInput,
+    review_input: ReviewInput,
     config: ReviewConfig,
     *,
     api_key: str,
@@ -54,13 +54,16 @@ def review(
     """
     if not api_key:
         raise ValueError("TYPESAFE_API_KEY is not set")
-    if not input.files:
+    if not review_input.files:
         raise ValueError("no file changes")
-    if sum(len(f.patch) + len(f.path) for f in input.files) + len(input.title) > MAX_STATE_CHARS:
+    if (
+        sum(len(f.patch) + len(f.path) for f in review_input.files) + len(review_input.title)
+        > MAX_STATE_CHARS
+    ):
         raise ValueError("too large for one Jev call")
     started = time.perf_counter()
     with nullcontext(client) if client is not None else httpx.Client(timeout=120) as http:
-        response = call(http, questions.request(input, config.model), api_key)
+        response = call(http, questions.request(review_input, config.model), api_key)
     return ReviewResult(
         questions=questions.VERSION,
         model=response.get("model"),

@@ -89,7 +89,7 @@ def select_rows(receipt: dict, all_rows: list[Row]) -> list[Row]:
     missing = set(receipt["case_ids"]) - indexed.keys()
     if missing:
         raise ValueError(f"benchmark rows are missing {len(missing)} recorded cases")
-    rows = [indexed[id] for id in receipt["case_ids"]]
+    rows = [indexed[case_id] for case_id in receipt["case_ids"]]
     if rows_hash(rows) != receipt["dataset"]["rows_sha256"]:
         raise ValueError("benchmark inputs or labels differ from the recorded run")
     if {row.id for row in rows if row.excluded is None} != set(receipt["eligible_ids"]):

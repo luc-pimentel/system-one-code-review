@@ -40,7 +40,8 @@ def test_a_calibrated_bin_has_no_error():
 def test_risk_coverage_takes_the_surest_answers_first():
     y = np.array([1, 1, 0, 0])
     aurc, coverage, risk = metrics.risk_coverage(y, np.array([0.9, 0.6, 0.4, 0.2]))
-    assert aurc == 0 and metrics.coverage_at(coverage, risk, 0.05) == 1.0
+    assert aurc == 0
+    assert metrics.coverage_at(coverage, risk, 0.05) == 1.0
     # 0.45 answers no on a yes case, and it is the least sure answer, so it comes last
     aurc, coverage, risk = metrics.risk_coverage(y, np.array([0.9, 0.45, 0.4, 0.2]))
     assert risk.tolist() == [0, 0, 0, 0.25]

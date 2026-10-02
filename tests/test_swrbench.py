@@ -47,8 +47,11 @@ def test_a_single_commit_is_the_reviewed_diff_and_labels_carry_over():
     row = to_row(record([commit("1", {"a.py": PATCH})], [change("F.2 Logic", "a.py\n" + PATCH)]), no_compare)
     assert row.excluded is None
     assert [f.path for f in row.files] == ["a.py"]
-    assert row.changes_requested and row.functional and row.categories == ["F.2"]
-    assert row.fault_files == ["a.py"] and row.era == "2024–25"
+    assert row.changes_requested
+    assert row.functional
+    assert row.categories == ["F.2"]
+    assert row.fault_files == ["a.py"]
+    assert row.era == "2024–25"
 
 
 def test_several_commits_are_compared_on_github():
@@ -61,7 +64,8 @@ def test_several_commits_are_compared_on_github():
     commits = [commit("1", {"a.py": PATCH}), commit("2", {"a.py": PATCH})]
     row = to_row(record(commits, [change("E.1.1 Textual Changes", "a.py\n" + PATCH)]), compare)
     assert seen == [("owner/repo", "b" * 40, "2")]
-    assert row.excluded is None and not row.functional
+    assert row.excluded is None
+    assert not row.functional
 
 
 def test_pull_requests_that_cannot_be_read_as_reviewed_are_left_out():
