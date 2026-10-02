@@ -31,6 +31,7 @@ def load_run(path: Path) -> tuple[dict, dict[str, dict]]:
 
 def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dict:
     baseline_receipt, candidate_receipt = provenance.read(baseline_dir), provenance.read(candidate_dir)
+    # the runs used different inputs, labels or cases
     if (
         baseline_receipt["dataset"] != candidate_receipt["dataset"]
         or set(baseline_receipt["case_ids"]) != set(candidate_receipt["case_ids"])
@@ -57,6 +58,7 @@ def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dic
 
     def binary(cases, answers, key, truth, statistic):
         values = np.array([noul(answers[row.id], key) for row in cases])
+        # a probability is outside 0 to 1
         if not np.all(np.isfinite(values) & (values >= 0) & (values <= 1)):
             raise ValueError(f"invalid probability in {key} answers")
         return statistic(np.array([truth(row) for row in cases]), values)

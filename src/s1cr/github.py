@@ -33,6 +33,7 @@ class PullRequest:
 def parse_pr_url(url: str) -> tuple[str, int]:
     parsed = urlsplit(url)
     match = re.fullmatch(r"/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)(?:/(?:files|commits))?/?", parsed.path)
+    # not a github.com pull request URL
     if parsed.scheme != "https" or parsed.netloc != "github.com" or not match:
         raise ValueError("expected a pull request URL: https://github.com/owner/repo/pull/123")
     return match[1], int(match[2])
@@ -40,17 +41,17 @@ def parse_pr_url(url: str) -> tuple[str, int]:
 
 def _api(endpoint: str, *, paginate: bool = False) -> dict | list:
     command = ["gh", "api", endpoint]
-    if paginate:
+    if paginate:  # every page is wanted
         command.extend(["--paginate", "--slurp"])
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
-    except FileNotFoundError as error:
+    except FileNotFoundError as error:  # gh is not installed
         raise GitHubError("GitHub CLI is required; install gh and run `gh auth login`") from error
-    except subprocess.CalledProcessError as error:
+    except subprocess.CalledProcessError as error:  # gh returned an error
         raise GitHubError(f"GitHub request failed: {error.stderr.strip()}") from error
     try:
         return json.loads(result.stdout)
-    except ValueError as error:
+    except ValueError as error:  # gh printed something that is not JSON
         raise GitHubError("GitHub CLI returned invalid JSON") from error
 
 
@@ -63,7 +64,7 @@ def pull_request(url: str) -> PullRequest:
     repo, number = parse_pr_url(url)
     endpoint = f"repos/{repo}/pulls/{number}"
     before = _api(endpoint)
-    if not before["changed_files"]:
+    if not before["changed_files"]:  # the pull request changed no files
         raise GitHubError("pull request has no file changes")
     pages = _api(f"{endpoint}/files?per_page=100", paginate=True)
     files = [file for page in pages for file in page]
@@ -72,21 +73,22 @@ def pull_request(url: str) -> PullRequest:
     def snapshot(pr: dict) -> tuple:
         return pr["base"]["sha"], pr["head"]["sha"], pr["title"], pr["body"], pr["changed_files"]
 
-    if snapshot(before) != snapshot(after):
+    if snapshot(before) != snapshot(after):  # the pull request changed while its files were being fetched
         raise GitHubError("pull request changed while fetching its diff; run the review again")
+    # GitHub listed fewer files than the pull request has, or listed one twice
     if len(files) != before["changed_files"] or len({f["filename"] for f in files}) != len(files):
         raise GitHubError("GitHub returned an incomplete file list; cannot review the whole pull request")
     diffs = []
     for file in files:
         patch = file.get("patch")
-        if not patch:
+        if not patch:  # GitHub sent no text patch for this file
             raise GitHubError(
                 f"GitHub did not return a text patch for {file['filename']}; "
                 "binary, rename-only, and oversized changes are not supported by this diff-only reviewer"
             )
         # The files API returns hunks without ---/+++ headers, so every +/- line counts.
         changed = sum(line.startswith(("+", "-")) for line in patch.split("\n"))
-        if changed != file["changes"]:
+        if changed != file["changes"]:  # the patch has fewer changed lines than GitHub counted
             raise GitHubError(f"GitHub returned an incomplete patch for {file['filename']}")
         diffs.append(FileDiff(file["filename"], patch, changed))
     return PullRequest(
@@ -117,11 +119,11 @@ class Comparer:
 
     def __call__(self, repo: str, base: str, head: str) -> tuple[list[FileDiff], int]:
         path = self.cache / f"{repo.replace('/', '__')}__{base[:12]}__{head[:12]}.json"
-        if path.exists():
+        if path.exists():  # this comparison is already cached
             data = json.loads(path.read_text())
         else:
             response = self.client.get(f"/repos/{repo}/compare/{base}...{head}")
-            if response.status_code != 200:
+            if response.status_code != 200:  # GitHub refused the comparison
                 raise RuntimeError(f"HTTP {response.status_code}")
             full = response.json()
             data = {

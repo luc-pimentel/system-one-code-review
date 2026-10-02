@@ -72,13 +72,13 @@ class Row:
 def download(target: Path) -> Path:
     """Fetch the benchmark file at the pinned commit and check it is the one this code was built on."""
     url = f"https://raw.githubusercontent.com/{SOURCE_REPO}/{SOURCE_COMMIT}/{SOURCE_PATH}"
-    if not target.exists():
+    if not target.exists():  # the file was never downloaded
         target.parent.mkdir(parents=True, exist_ok=True)
         response = httpx.get(url, timeout=300, follow_redirects=True)
         response.raise_for_status()
         target.write_bytes(response.content)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    if not digest.startswith(SOURCE_SHA256):
+    if not digest.startswith(SOURCE_SHA256):  # the file is not the pinned benchmark
         raise ValueError(
             f"{target} has SHA-256 {digest[:16]}, expected {SOURCE_SHA256}; delete it and fetch again"
         )
@@ -114,15 +114,15 @@ def fault_files(record: dict, files: list[FileDiff]) -> list[str]:
     for change in record["changes"]:
         snippet = change["change_introducing"]["code_snippet"]
         first = snippet.split("\n", 1)[0].strip()
-        if first in paths:
+        if first in paths:  # the snippet starts with a changed file's path
             found.add(first)
             continue
         lines = {line[1:].strip() if line[:1] in "+- " else line.strip() for line in snippet.split("\n")}
         for line in sorted(lines, key=len, reverse=True)[:5]:
-            if len(line) < 12:
+            if len(line) < 12:  # the remaining lines are too short to be unique
                 break
             holders = [f.path for f in files if line in f.patch]
-            if len(holders) == 1:
+            if len(holders) == 1:  # exactly one changed file holds this line
                 found.add(holders[0])
                 break
     return sorted(found)
@@ -145,10 +145,11 @@ def to_row(record: dict, compare: Compare) -> Row:
         changes_requested=bool(record["change_introduced"]),
         categories=[change["change_type"].split()[0] for change in record["changes"]],
     )
+    # a merge commit precedes the first review
     if any(c["message"].lower().startswith("merge") for c in commits):
         row.excluded = "a merge commit before the first review mixes other work into the diff"
         return row
-    if len(commits) == 1:
+    if len(commits) == 1:  # one commit: its diff is the reviewed diff
         row.files = commit_files(commits[0])
     else:
         try:
@@ -156,12 +157,14 @@ def to_row(record: dict, compare: Compare) -> Row:
         except Exception as error:  # the commits are gone from GitHub, or the API refused
             row.excluded = f"GitHub could not compare the commits: {error}"
             return row
-        if ahead != len(commits):
+        if ahead != len(commits):  # the compared range is not the pull request's commits
             row.excluded = f"the compared range holds {ahead} commits, not the pull request's {len(commits)}"
             return row
-    if not row.files:
+    if not row.files:  # the diff is empty
         row.excluded = "no file changes"
-    elif sum(len(f.patch) + len(f.path) for f in row.files) + len(row.title) > MAX_STATE_CHARS:
+    elif (
+        sum(len(f.patch) + len(f.path) for f in row.files) + len(row.title) > MAX_STATE_CHARS
+    ):  # the diff is over Jev's size limit
         row.excluded = "too large for one Jev call"
     row.fault_files = fault_files(record, row.files)
     return row

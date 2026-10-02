@@ -20,14 +20,14 @@ REPORT = Path("reports/jev-swrbench.md")
 
 
 def load_rows(path: Path = ROWS) -> list[swrbench.Row]:
-    if not path.exists():
+    if not path.exists():  # the rows were never built
         raise FileNotFoundError(f"{path} is missing; run `s1cr build` first")
     return [swrbench.Row.from_json(line) for line in path.read_text().splitlines() if line]
 
 
 def api_key() -> str:
     key = os.environ.get("TYPESAFE_API_KEY")
-    if not key:
+    if not key:  # no API key in the environment
         raise SystemExit("error: TYPESAFE_API_KEY is not set")
     return key
 
@@ -46,7 +46,7 @@ def build(args: argparse.Namespace) -> None:
     print(f"{len(kept)} of {len(rows)} pull requests kept in {ROWS}")
     reasons: dict[str, int] = {}
     for row in rows:
-        if row.excluded:
+        if row.excluded:  # the row was left out of the benchmark
             key = row.excluded.split(":")[0]
             reasons[key] = reasons.get(key, 0) + 1
     for reason, count in sorted(reasons.items(), key=lambda item: -item[1]):
@@ -55,14 +55,14 @@ def build(args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     try:
-        if args.limit is not None and args.limit < 1:
+        if args.limit is not None and args.limit < 1:  # a limit below one row was asked for
             raise ValueError("limit must be at least 1")
         rows = load_rows()[: args.limit]
         ok, failed = jev.run(rows, RUNS / args.name / "answers.jsonl", args.model, api_key(), args.workers)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError) as error:  # the rows or the run directory are unusable
         raise SystemExit(f"error: {error}") from error
     print(f"{ok} answered, {failed} failed, in {RUNS / args.name}/answers.jsonl")
-    if failed:
+    if failed:  # some calls failed, so the run is incomplete
         raise SystemExit(1)
 
 
@@ -80,7 +80,12 @@ def review(args: argparse.Namespace) -> None:
         key = api_key()
         pr = github.pull_request(args.url)
         result = jev.review(pr.input, ReviewConfig(model=args.model), api_key=key)
-    except (github.GitHubError, jev.JevError, httpx.HTTPError, ValueError) as error:
+    except (
+        github.GitHubError,
+        jev.JevError,
+        httpx.HTTPError,
+        ValueError,
+    ) as error:  # GitHub, Jev, the network or the URL failed
         raise SystemExit(f"error: {error}") from error
     print(json.dumps(document(pr, result), ensure_ascii=False) if args.json else readable(pr, result))
 
@@ -95,7 +100,7 @@ def compare(args: argparse.Namespace) -> None:
 
     try:
         result = compare_runs(load_rows(args.rows), run_path(args.baseline), run_path(args.candidate))
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError) as error:  # a run directory or its receipt is unusable
         raise SystemExit(f"error: {error}") from error
     print(
         json.dumps(result, ensure_ascii=False, allow_nan=False) if args.json else readable_comparison(result)

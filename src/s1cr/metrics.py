@@ -16,8 +16,9 @@ def ranks(values: np.ndarray) -> np.ndarray:
     sorted_values = values[order]
     ranked = np.empty(len(values))
     start = 0
-    while start < len(values):
+    while start < len(values):  # walk every run of equal values
         end = start
+        # extend the run over ties
         while end + 1 < len(values) and sorted_values[end + 1] == sorted_values[start]:
             end += 1
         ranked[order[start : end + 1]] = (start + end) / 2 + 1
@@ -29,7 +30,7 @@ def auroc(y: np.ndarray, p: np.ndarray) -> float:
     """The chance that a random yes case scores above a random no case (ties count half)."""
     y = np.asarray(y, dtype=bool)
     positives, negatives = int(y.sum()), int((~y).sum())
-    if not positives or not negatives:
+    if not positives or not negatives:  # only one class is present, so ranking is undefined
         return float("nan")
     return float(
         (ranks(np.asarray(p, dtype=float))[y].sum() - positives * (positives + 1) / 2)
@@ -40,7 +41,7 @@ def auroc(y: np.ndarray, p: np.ndarray) -> float:
 def average_precision(y: np.ndarray, p: np.ndarray) -> float:
     """Precision averaged over the rank of every yes case, from the most to the least likely."""
     y = np.asarray(y, dtype=bool)[np.argsort(-np.asarray(p, dtype=float), kind="mergesort")]
-    if not y.any():
+    if not y.any():  # there is no yes case to rank
         return float("nan")
     precision = np.cumsum(y) / np.arange(1, len(y) + 1)
     return float(precision[y].mean())
@@ -62,7 +63,7 @@ def calibration(
     for b in range(bins):
         low, high = b / bins, (b + 1) / bins
         inside = (p >= low) & ((p < high) if b < bins - 1 else (p <= high))
-        if inside.any():
+        if inside.any():  # the bin has cases
             mean_p, rate = float(p[inside].mean()), float(y[inside].mean())
             table.append((low, high, int(inside.sum()), mean_p, rate))
             error += inside.sum() / len(p) * abs(mean_p - rate)
@@ -101,7 +102,7 @@ def bootstrap(
     for _ in range(samples):
         pick = rng.integers(0, n, n)
         value = statistic(*(np.asarray(a)[pick] for a in arrays))
-        if not np.isnan(value):
+        if not np.isnan(value):  # the resample produced a defined value
             values.append(value)
     low, high = np.percentile(values, [2.5, 97.5])
     return float(low), float(high)
