@@ -148,7 +148,7 @@ def render(
             "| --- | --- | --- |",
             *rows,
             "",
-            "**Functions this PR changed** (`+` added in this PR, `−` removed)",
+            "**Functions this PR touched**, each with its decisions as they are now",
             "",
             fold(changed),
             "",

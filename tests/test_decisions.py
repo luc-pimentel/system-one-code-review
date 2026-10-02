@@ -92,7 +92,7 @@ def test_links_and_the_limit_marks():
     assert decisions.render(fn, 3).startswith("🔴")
 
 
-def test_comparison_marks_added_and_removed_decisions(tmp_path):
+def test_the_header_says_when_the_count_moved_and_the_outline_is_the_current_state(tmp_path):
     path = tmp_path / "m.py"
     old = decisions.functions(path, "def f(x):\n    if x < 0:  # negative\n        return 0\n    return x\n")[
         0
@@ -100,10 +100,12 @@ def test_comparison_marks_added_and_removed_decisions(tmp_path):
     new_text = "def f(x):\n    if x < 0:  # negative\n        return 0\n    if x > 9:  # too big\n        return 9\n    return x\n"
     new = decisions.functions(path, new_text)[0]
     text = decisions.render(new, 10, before=old)
-    assert text.startswith("⚪ **`m.f`** — 2 → 3 of 10 decisions")
-    assert "\n- **if** negative → ↩ returns `0`  L2\n- + **if** too big → ↩ returns `9`  L4" in text
-    back = decisions.render(old, 10, before=new)
-    assert back.endswith("- − **if** too big → ↩ returns `9`  (was L4)")
+    assert text == (
+        "⚪ **`m.f`** — 3 of 10 decisions (was 2)\n"
+        "- **if** negative → ↩ returns `0`  L2\n"
+        "- **if** too big → ↩ returns `9`  L4"
+    )
+    assert decisions.render(old, 10, before=new).endswith("(was 3)\n- **if** negative → ↩ returns `0`  L2")
     assert decisions.render(new, 10, new=True).startswith("⚪ **`m.f`** — 3 of 10 decisions, new")
 
 
@@ -139,5 +141,5 @@ def test_every_edited_function_is_listed_with_its_whole_path(tmp_path):
         "⚪ **`m.edited`** — 2 of 10 decisions",
         "⚪ **`m.added`** — 1 of 10 decisions, new",
     ]
-    assert blocks[0].endswith("- + **if** set → ↩ returns `2`  L8\n- − **if** set → ↩ returns `1`  (was L8)")
+    assert blocks[0].endswith("- **if** set → ↩ returns `2`  L8")
     assert decisions.compare_file(path, new, old, 10)[-1] == "− **`m.added`** removed (1 decisions)"

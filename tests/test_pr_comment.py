@@ -46,7 +46,7 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
     assert "| ruff format | ⚪ pass | 22 files already formatted |" in body
     assert "| pytest | ⚪ pass | 81 passed in 0.87s |" in body
     assert "| complexity | 🟡 watch | highest 8 of 10 (`github.pull_request`) |" in body
-    assert "**Functions this PR changed**" in body
+    assert "**Functions this PR touched**" in body
     assert "No function changed." in body
     assert "Limits: pyproject.toml (mccabe 10, 12 branches, 50 statements). Updated " in body
     assert body.endswith(pr_comment.MARKER)

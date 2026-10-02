@@ -65,7 +65,7 @@ continues to follow [`worktree-repos/scripts/review/jev-review.mjs`](https://git
 ## Checks
 
 Every pull request runs `ruff check`, `ruff format --check` and `pytest`, and gets one comment that
-sums them up and lists the functions the pull request changed, decision by decision. A decision is
+sums them up and lists the functions the pull request touched, decision by decision. A decision is
 what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` carries a comment
 that reads as its condition in plain words, so the list reads like prose:
 

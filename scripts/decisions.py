@@ -13,7 +13,6 @@ import re
 import subprocess
 import tokenize
 import tomllib
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,10 +38,6 @@ class Decision:
     @property
     def missing(self) -> bool:
         return self.counted and self.kind in NEEDS_PHRASE and not self.phrase
-
-    @property
-    def key(self) -> tuple[str, str, str | None]:
-        return (self.kind, self.phrase or self.code, self.outcome)
 
     def text(self) -> str:
         if self.kind == "otherwise":  # an else branch: not a decision, shown for the nesting
@@ -73,10 +68,6 @@ class Function:
     @property
     def label(self) -> str:
         return f"{self.path.stem}.{self.name}"
-
-    @property
-    def keys(self) -> Counter:
-        return Counter(d.key for d in self.decisions if d.counted)
 
 
 class Source:
@@ -299,10 +290,10 @@ def link(path: Path, line: int, link_base: str) -> str:
 def render(
     fn: Function, limit: int, link_base: str = "", *, before: Function | None = None, new: bool = False
 ) -> str:
-    """One function as a markdown outline: a header line, then one bullet per decision."""
+    """One function as a markdown outline: a header line, then one bullet per decision, as it is now."""
     counts = f"{fn.count} of {limit} decisions"
-    if before is not None and before.count != fn.count:  # the count moved
-        counts = f"{before.count} → {fn.count} of {limit} decisions"
+    if before is not None and before.count != fn.count:  # the count moved since the base revision
+        counts += f" (was {before.count})"
     header = f"{mark(fn, limit)} **`{fn.label}`** — {counts}"
     if new:  # the function did not exist at the base revision
         header += ", new"
@@ -310,19 +301,8 @@ def render(
         header += f", {fn.missing} without a phrase"
     if fn.doc:  # the docstring's first line says what the function is for
         header += f" · *{fn.doc}*"
-    added = fn.keys - before.keys if before else Counter()
-    removed = before.keys - fn.keys if before else Counter()
     lines = [header]
-    for d in fn.decisions:
-        prefix = ""
-        if added[d.key] > 0:  # this decision is new since the base revision
-            added[d.key] -= 1
-            prefix = "+ "
-        lines.append(f"{'  ' * d.depth}- {prefix}{d.text()}  {link(fn.path, d.line, link_base)}")
-    for d in before.decisions if before else []:
-        if removed[d.key] > 0:  # this decision is gone since the base revision
-            removed[d.key] -= 1
-            lines.append(f"- − {d.text()}  (was L{d.line})")
+    lines.extend(f"{'  ' * d.depth}- {d.text()}  {link(fn.path, d.line, link_base)}" for d in fn.decisions)
     return "\n".join(lines)
 
 
@@ -366,7 +346,7 @@ def compare_file(path: Path, old_text: str, new_text: str, limit: int, link_base
 
 
 def changed_report(base: str, paths: list[str], limit: int, link_base: str = "") -> str:
-    """The functions edited since `base`, each with its whole decision path and what moved in it."""
+    """The functions edited since `base`, each with its whole decision path as it is now."""
     blocks = []
     for path in map(Path, git("diff", "--name-only", base, "--", *paths).splitlines()):
         if path.suffix != ".py":  # not Python
