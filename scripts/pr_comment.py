@@ -148,7 +148,7 @@ def render(
             "| --- | --- | --- |",
             *rows,
             "",
-            "**Functions this PR touched**, each with its decisions as they are now",
+            "**Functions this PR touched**, in the order the app reaches them, each with its decisions as they are now",
             "",
             fold(changed),
             "",

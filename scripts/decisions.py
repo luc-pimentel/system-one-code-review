@@ -3,7 +3,8 @@
 A decision is what ruff's C901 counts: an `if` or `elif`, a loop, an `except`, a `match` case and a
 nested function. The comment on its line (or on the line above) reads as the condition, and a guard's
 `raise` message is its outcome. `python -m scripts.decisions src/s1cr/github.py` lists one file;
-`--changed main` lists only the functions whose decisions differ from that Git revision.
+`--changed main` lists only the functions the branch touched. A package is listed in the order the
+console script reaches its functions, grouped by subcommand; one file is listed top to bottom.
 """
 
 import argparse
@@ -13,7 +14,7 @@ import re
 import subprocess
 import tokenize
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -293,7 +294,13 @@ def link(path: Path, line: int, link_base: str) -> str:
 
 
 def render(
-    fn: Function, limit: int, link_base: str = "", *, before: Function | None = None, new: bool = False
+    fn: Function,
+    limit: int,
+    link_base: str = "",
+    *,
+    before: Function | None = None,
+    new: bool = False,
+    note: str | None = None,
 ) -> str:
     """One function as a markdown outline: a header line, then one bullet per decision, as it is now."""
     counts = f"{fn.count} of {limit} decisions" if fn.count else "no decisions"
@@ -304,6 +311,8 @@ def render(
         header += ", new"
     if fn.missing:  # some conditions still read as code
         header += f", {fn.missing} without a phrase"
+    if note:  # where the function sits on the app's path
+        header += f" · {note}"
     if fn.doc:  # the docstring's first line says what the function is for
         header += f" · *{fn.doc}*"
     lines = [header]
@@ -323,46 +332,272 @@ def git(*args: str) -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
-def report(paths: list[str], limit: int, link_base: str = "") -> str:
-    blocks = [
-        render(fn, limit, link_base)
-        for path in python_files(paths)
-        for fn in functions(path, path.read_text())
+@dataclass
+class Entry:
+    fn: Function
+    before: Function | None = None
+    new: bool = False
+
+
+def entry_point(pyproject: Path = Path("pyproject.toml")) -> tuple[str, str] | None:
+    """The console script and the function it starts, from `[project.scripts]`: (`s1cr`, `cli.main`)."""
+    if not pyproject.exists():  # no project file
+        return None
+    scripts = tomllib.loads(pyproject.read_text()).get("project", {}).get("scripts", {})
+    for script, target in scripts.items():  # the first script is the app
+        module, _, function = target.partition(":")
+        return script, f"{module.rsplit('.', 1)[-1]}.{function}"
+    return None
+
+
+def import_map(tree: ast.Module) -> dict[str, tuple[str, str]]:
+    """Local names from relative imports: `from . import github` and `from .report import write_report`."""
+    names = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level:  # a relative import, anywhere in the module
+            for alias in node.names:
+                kind, target = (
+                    ("module", alias.name) if node.module is None else ("name", f"{node.module}.{alias.name}")
+                )
+                names[alias.asname or alias.name] = (kind, target)
+    return names
+
+
+def subcommand_parsers(node: ast.AST) -> dict[str, str]:
+    """`x = commands.add_parser("name", ...)` assignments: the variable and the subcommand it parses."""
+    parsers = {}
+    for sub in ast.walk(node):
+        call = sub.value if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Call) else None
+        if (
+            not call
+            or not isinstance(call.func, ast.Attribute)
+            or call.func.attr != "add_parser"
+            or not call.args
+        ):
+            continue  # not a parser being made
+        if (
+            isinstance(call.args[0], ast.Constant)
+            and len(sub.targets) == 1
+            and isinstance(sub.targets[0], ast.Name)
+        ):
+            parsers[sub.targets[0].id] = call.args[0].value
+    return parsers
+
+
+def set_defaults_calls(node: ast.AST) -> list[ast.Call]:
+    """Every `x.set_defaults(...)` call under `node`, in source order."""
+    calls = [
+        sub
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "set_defaults"
     ]
-    return "\n\n".join(blocks)
+    return sorted(calls, key=lambda call: (call.lineno, call.col_offset))
 
 
-def compare_file(path: Path, old_text: str, new_text: str, limit: int, link_base: str = "") -> list[str]:
-    """Every function whose source differs between the two versions, with its whole decision path."""
-    old = {fn.name: fn for fn in functions(path, old_text)}
-    new = functions(path, new_text)
-    blocks = []
+class CallGraph:
+    """Which functions refer to which, resolved through relative imports, in evaluation order."""
+
+    def __init__(self, paths: list[Path]) -> None:
+        self.nodes: dict[str, ast.AST] = {}
+        self.targets: dict[str, list[str]] = {}
+        self.imports: dict[str, dict[str, tuple[str, str]]] = {}
+        for path in paths:
+            if path.stem == "__init__":  # a package marker, not a module
+                continue
+            tree = ast.parse(path.read_text())
+            self.imports[path.stem] = import_map(tree)
+            for node in tree.body:
+                self.index(path.stem, node)
+
+    def index(self, module: str, node: ast.stmt, prefix: str = "") -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):  # a function or method
+            label = f"{module}.{prefix}{node.name}"
+            self.nodes[label] = node
+            self.targets[label] = [label]
+        elif isinstance(node, ast.ClassDef):  # a class stands for its methods, in order
+            methods = [sub for sub in node.body if isinstance(sub, ast.FunctionDef | ast.AsyncFunctionDef)]
+            self.targets[f"{module}.{node.name}"] = [f"{module}.{node.name}.{sub.name}" for sub in methods]
+            for method in methods:
+                self.index(module, method, f"{node.name}.")
+
+    def resolve(self, module: str, node: ast.AST) -> list[str]:
+        """The functions a name or `module.name` stands for, if any."""
+        local = self.imports[module]
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):  # `module.name`
+            found = local.get(node.value.id)
+            return self.targets.get(f"{found[1]}.{node.attr}", []) if found and found[0] == "module" else []
+        if isinstance(node, ast.Name):  # a bare name: imported, or from this module
+            found = local.get(node.id)
+            if found and found[0] == "name":  # imported with `from .module import name`
+                return self.targets.get(found[1], [])
+            return self.targets.get(f"{module}.{node.id}", [])
+        return []
+
+    def references(self, module: str, node: ast.AST) -> Iterator[str]:
+        """Functions a node refers to, in evaluation order: a call's arguments before the call itself."""
+        if isinstance(node, ast.Call):  # arguments run first
+            for child in [*node.args, *node.keywords]:
+                yield from self.references(module, child)
+            yield from self.references(module, node.func)
+            return
+        if isinstance(node, ast.AnnAssign):  # an annotation is not run
+            if node.value:  # the assigned value is
+                yield from self.references(module, node.value)
+            return
+        yield from self.resolve(module, node)
+        for child in ast.iter_child_nodes(node):
+            yield from self.references(module, child)
+
+    def edges(self, label: str) -> list[str]:
+        """The functions one function refers to, first reference first, each once."""
+        module = label.split(".")[0]
+        ordered: list[str] = []
+        for statement in self.nodes[label].body:
+            for target in self.references(module, statement):
+                if target != label and target not in ordered:  # a new target
+                    ordered.append(target)
+        return ordered
+
+    def reach(self, start: str) -> dict[str, list[str]]:
+        """Every function reached from `start`, depth first, with the chain that reached it."""
+        reached: dict[str, list[str]] = {}
+
+        def visit(label: str, chain: list[str]) -> None:
+            if label in reached or label not in self.nodes:  # seen already, or not a function here
+                return
+            reached[label] = chain
+            for target in self.edges(label):
+                visit(target, [*chain, label])
+
+        visit(start, [])
+        return reached
+
+    def handlers(self, entry: str) -> list[tuple[str, str]]:
+        """The functions the entry hands subcommands to, in registration order, with each subcommand's name."""
+        module, node = entry.split(".")[0], self.nodes.get(entry)
+        if node is None:  # the entry is not in these files
+            return []
+        parsers = subcommand_parsers(node)
+        found = []
+        for call in set_defaults_calls(node):
+            receiver = call.func.value.id if isinstance(call.func.value, ast.Name) else ""
+            for keyword in call.keywords:
+                if keyword.arg == "func":  # the handler
+                    found.extend(
+                        (t, parsers.get(receiver, t.split(".")[-1]))
+                        for t in self.resolve(module, keyword.value)
+                    )
+        return found or [(target, target.split(".")[-1]) for target in self.edges(entry)]
+
+
+class Layout:
+    """Entries in the order the app reaches them, grouped by subcommand, the unreached last."""
+
+    def __init__(self, graph: CallGraph, script: str, entry: str) -> None:
+        self.script, self.entry = script, entry
+        self.reached = graph.reach(entry)
+        self.handlers = graph.handlers(entry)
+        self.names = dict(self.handlers)
+        self.under = {label: graph.reach(label) for label, _ in self.handlers}
+        self.position = {label: index for index, label in enumerate(self.reached)}
+        self.groups: list[str | None] = ["", *self.names.values(), None]
+
+    def group(self, label: str) -> str | None:
+        chain = self.reached.get(label)
+        if chain is None:  # never reached from the entry
+            return None
+        if label in self.names:  # a handler heads its own group
+            return self.names[label]
+        handler = chain[1] if len(chain) > 1 else self.entry
+        return self.names.get(handler, "")
+
+    def note(self, label: str, group: str | None) -> str | None:
+        chain = self.reached.get(label) or []
+        heads = {self.entry, *(h for h, name in self.handlers if name == group)}
+        parts = []
+        if chain and chain[-1] not in heads:  # the caller is not the group's own handler
+            parts.append(f"via `{chain[-1]}`")
+        also = [name for h, name in self.handlers if name != group and label in self.under[h]]
+        if also:  # other subcommands reach it too
+            parts.append("also under " + ", ".join(f"`{self.script} {name}`" for name in also))
+        return " · ".join(parts) or None
+
+    def heading(self, group: str | None) -> str:
+        if group is None:  # the leftovers
+            return f"**Not reached from `{self.script}`**"
+        return f"**`{self.script}`**" if group == "" else f"**`{self.script} {group}`**"
+
+    def key(self, item: Entry) -> tuple:
+        label = item.fn.label
+        return (
+            self.groups.index(self.group(label)),
+            self.position.get(label, 0),
+            str(item.fn.path),
+            item.fn.line,
+        )
+
+    def render(self, entries: list[Entry], limit: int, link_base: str = "") -> str:
+        sections: dict[str | None, list[str]] = {}
+        for item in sorted(entries, key=self.key):
+            group = self.group(item.fn.label)
+            note = self.note(item.fn.label, group)
+            block = render(item.fn, limit, link_base, before=item.before, new=item.new, note=note)
+            sections.setdefault(group, []).append(block)
+        return "\n\n".join(
+            self.heading(g) + "\n\n" + "\n\n".join(sections[g]) for g in self.groups if g in sections
+        )
+
+
+def arrange(
+    entries: list[Entry], paths: list[str], limit: int, link_base: str, app: tuple[str, str] | None
+) -> str:
+    """Entries on the app's path when there is an app, else in file order."""
+    if app is None:  # no console script to follow
+        return "\n\n".join(render(e.fn, limit, link_base, before=e.before, new=e.new) for e in entries)
+    roots = sorted({str(path.parent) for path in python_files(paths)})
+    return Layout(CallGraph(python_files(roots)), *app).render(entries, limit, link_base)
+
+
+def report(paths: list[str], limit: int, link_base: str = "", *, order: str = "path") -> str:
+    entries = [Entry(fn) for path in python_files(paths) for fn in functions(path, path.read_text())]
+    if order == "file":  # top to bottom, as in the editor
+        return "\n\n".join(render(e.fn, limit, link_base) for e in entries)
+    return arrange(entries, paths, limit, link_base, entry_point())
+
+
+def touched(old: dict[str, Function], new: list[Function]) -> list[Entry]:
+    """The functions whose source differs, leaving out straight-line code that stayed straight."""
+    found = []
     for fn in new:
         before = old.get(fn.name)
         if not fn.count and not (before and before.count):  # straight-line code: nothing to glance at
             continue
         if before is None:  # the function is new
-            blocks.append(render(fn, limit, link_base, new=True))
+            found.append(Entry(fn, new=True))
         elif before.text != fn.text:  # the function was edited
-            blocks.append(render(fn, limit, link_base, before=before))
-    names = {fn.name for fn in new}
-    blocks.extend(
-        f"− **`{fn.label}`** removed ({fn.count} decisions)" for name, fn in old.items() if name not in names
-    )
-    return blocks
+            found.append(Entry(fn, before))
+    return found
 
 
 def changed_report(base: str, paths: list[str], limit: int, link_base: str = "") -> str:
-    """The functions edited since `base`, each with its whole decision path as it is now."""
-    blocks = []
+    """The functions edited since `base`, each with its whole decision path, on the app's path."""
+    entries, removed = [], []
     for path in map(Path, git("diff", "--name-only", base, "--", *paths).splitlines()):
         if path.suffix != ".py":  # not Python
             continue
-        old_text = git("show", f"{base}:{path.as_posix()}")
-        blocks.extend(
-            compare_file(path, old_text, path.read_text() if path.exists() else "", limit, link_base)
+        old = {fn.name: fn for fn in functions(path, git("show", f"{base}:{path.as_posix()}"))}
+        new = functions(path, path.read_text()) if path.exists() else []
+        entries.extend(touched(old, new))
+        names = {fn.name for fn in new}
+        removed.extend(
+            f"− **`{fn.label}`** removed ({fn.count} decisions)" for n, fn in old.items() if n not in names
         )
-    return "\n\n".join(blocks) or "No function changed."
+    if not entries and not removed:  # nothing to show
+        return "No function changed."
+    body = arrange(entries, paths, limit, link_base, entry_point()) if entries else ""
+    return "\n\n".join(part for part in (body, "\n".join(removed)) if part)
 
 
 def limits(pyproject: Path = Path("pyproject.toml")) -> dict[str, int]:
@@ -389,11 +624,17 @@ def main(argv: list[str] | None = None) -> int:
         "--limit", type=int, default=limits()["decisions"], help="most decisions a function may have"
     )
     parser.add_argument("--link-base", default="", help="URL prefix that turns line numbers into links")
+    parser.add_argument(
+        "--order", choices=("path", "file"), help="the app's path (default for a package) or file order"
+    )
     args = parser.parse_args(argv)
     if args.changed:  # compare with a Git revision
         print(changed_report(args.changed, args.paths, args.limit, args.link_base))
     else:
-        print(report(args.paths, args.limit, args.link_base))
+        single = len(args.paths) == 1 and Path(args.paths[0]).is_file()
+        print(
+            report(args.paths, args.limit, args.link_base, order=args.order or ("file" if single else "path"))
+        )
     return 0
 
 

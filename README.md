@@ -70,9 +70,14 @@ what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `s
 that reads as its condition in plain words, so the list reads like prose:
 
 ```sh
-uv run python -m scripts.decisions src/s1cr/github.py   # one file
+uv run python -m scripts.decisions src/s1cr/github.py   # one file, top to bottom
+uv run python -m scripts.decisions src                   # the package, in the order `s1cr` reaches it
 uv run python -m scripts.decisions --changed main        # what this branch changed
 ```
+
+The package and the pull request comment list functions in the order the `s1cr` command reaches them,
+grouped by subcommand, with the caller named when it is not the subcommand itself. Functions nothing
+reaches from `s1cr` come last.
 
 ## How the benchmark works
 
