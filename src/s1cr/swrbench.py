@@ -17,82 +17,14 @@ from pathlib import Path
 
 import httpx
 
+from .models import MAX_STATE_CHARS, ReviewInput
+from .models import FileDiff as FileDiff
+from .questions import CATEGORIES as CATEGORIES
+
 SOURCE_REPO = "ZZR0/SWRench"
 SOURCE_COMMIT = "67ae1d4395ac05f800d62b0e13678eadeb9fa5c7"
 SOURCE_PATH = "data/swr_datasets_d5c5.jsonl"
 SOURCE_SHA256 = "7048e7a92ea9f7a1"  # first 16 hex digits of the file's SHA-256
-
-# One Jev call holds about 32k tokens of state; a pull request larger than this does not fit in one.
-MAX_STATE_CHARS = 90_000
-
-# SWR-Bench's categories, with the definitions its annotators worked from (swrbench/collect_pr_review.py).
-# E is evolvability: the code works, but could be clearer or better built. F is functional: it does not work.
-CATEGORIES: dict[str, tuple[str, str]] = {
-    "E.1.1": (
-        "Textual Changes",
-        "Adjustments to comments (e.g., adding, correcting, clarifying) or identifier names (variables, "
-        "functions, classes) for better clarity and consistency.",
-    ),
-    "E.1.2": (
-        "Language Features",
-        "Utilizing language-specific constructs (e.g., `final` in Java, type annotations, access modifiers) "
-        "primarily to convey developer intent, constraints, or information, rather than for functional impact.",
-    ),
-    "E.2": (
-        "Visual Representation",
-        "Modifications to code formatting and layout, such as indentation, spacing, line breaks, or bracket "
-        "placement, to improve visual clarity and adhere to style conventions.",
-    ),
-    "E.3.1": (
-        "Organization",
-        "Reorganizing code elements, such as removing dead (unused) code, moving functions or classes to more "
-        "appropriate locations, or restructuring files/packages for better modularity.",
-    ),
-    "E.3.2": (
-        "Solution Approach",
-        "Modifying the internal implementation details or algorithms (e.g., refactoring for clarity/efficiency, "
-        "updating function usage to newer patterns), or adding supporting code like tests, without altering the "
-        "observable functionality.",
-    ),
-    "F.1": (
-        "Interface",
-        "Fixes related to how different code components interact, including incorrect method calls, wrong "
-        "parameter types/values, violated API contracts, or incorrect event handling.",
-    ),
-    "F.2": (
-        "Logic",
-        "Corrections to errors in algorithms, conditional statements (if/else), loops, computations, or other "
-        "logical constructs leading to incorrect behavior.",
-    ),
-    "F.3": (
-        "Resource",
-        "Fixes concerning the management of data, variables, or system resources, including initialization "
-        "errors, memory leaks, improper resource release/acquisition, or incorrect data manipulation (e.g., "
-        "concurrency issues).",
-    ),
-    "F.4": (
-        "Check",
-        "Adding or modifying validation or checks (e.g., null checks, boundary checks, state validation) for "
-        "variables, parameters, or function return values to handle potential errors or invalid states correctly.",
-    ),
-    "F.5": (
-        "Support",
-        "Corrections related to the interaction with external systems, libraries, frameworks, or APIs (e.g., "
-        "incorrect usage, adapting to API changes, version incompatibilities).",
-    ),
-    "F.6": (
-        "Larger Defects",
-        "Significant functional fixes that often span multiple files or components, address incompletely "
-        "implemented features, fix major inconsistencies (like GUI behavior), or require broader system knowledge.",
-    ),
-}
-
-
-@dataclass
-class FileDiff:
-    path: str
-    patch: str  # unified diff hunks, as GitHub shows them
-    changed: int  # added plus removed lines
 
 
 @dataclass
@@ -109,6 +41,10 @@ class Row:
     categories: list[str] = field(default_factory=list)  # category codes of the problems they found
     fault_files: list[str] = field(default_factory=list)  # files those problems were in, where known
     excluded: str | None = None  # why the pull request is left out, if it is
+
+    def review_input(self) -> ReviewInput:
+        """Strip the labels and benchmark metadata before invoking the reviewer."""
+        return ReviewInput(self.title, self.description, self.files)
 
     @property
     def functional(self) -> bool:

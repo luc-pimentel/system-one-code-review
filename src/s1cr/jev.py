@@ -8,12 +8,17 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
 from . import questions
-from .swrbench import Row
+from .models import MAX_STATE_CHARS, ReviewConfig, ReviewInput, ReviewResult
+
+if TYPE_CHECKING:
+    from .swrbench import Row
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
 
@@ -35,6 +40,36 @@ def call(client: httpx.Client, request: dict, api_key: str, attempts: int = 3) -
     raise JevError(error)
 
 
+def review(
+    input: ReviewInput,
+    config: ReviewConfig,
+    *,
+    api_key: str,
+    client: httpx.Client | None = None,
+) -> ReviewResult:
+    """Review one PR with the frozen v1 questions, from either GitHub or a benchmark.
+
+    A caller may share an HTTP client across reviews; otherwise this call owns its client.
+    The size check matches the original benchmark's preflight check exactly.
+    """
+    if not api_key:
+        raise ValueError("TYPESAFE_API_KEY is not set")
+    if not input.files:
+        raise ValueError("no file changes")
+    if sum(len(f.patch) + len(f.path) for f in input.files) + len(input.title) > MAX_STATE_CHARS:
+        raise ValueError("too large for one Jev call")
+    started = time.perf_counter()
+    with nullcontext(client) if client is not None else httpx.Client(timeout=120) as http:
+        response = call(http, questions.request(input, config.model), api_key)
+    return ReviewResult(
+        questions=questions.VERSION,
+        model=response.get("model"),
+        answers=response["answers"],
+        usage=response.get("usage"),
+        ms=round((time.perf_counter() - started) * 1000),
+    )
+
+
 def done(output: Path) -> set[str]:
     """Pull requests that already have an answer in this run."""
     if not output.exists():
@@ -43,28 +78,21 @@ def done(output: Path) -> set[str]:
     return {line["id"] for line in lines if "answers" in line}
 
 
-def run(rows: list[Row], output: Path, model: str, api_key: str, workers: int = 4) -> tuple[int, int]:
+def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int = 4) -> tuple[int, int]:
     """Ask every row's questions once, appending one JSON line per answer to `output`. A rerun picks up
     where the last one stopped. Returns how many calls succeeded and failed."""
     output.parent.mkdir(parents=True, exist_ok=True)
     todo = [row for row in rows if row.excluded is None and row.id not in done(output)]
     lock = threading.Lock()
     ok = failed = 0
+    config = ReviewConfig(model=model)
 
-    def ask(client: httpx.Client, row: Row) -> dict:
-        started = time.perf_counter()
+    def ask(client: httpx.Client, row: "Row") -> dict:
         try:
-            response = call(client, questions.request(row, model), api_key)
-        except (JevError, httpx.HTTPError) as error:
+            result = review(row.review_input(), config, api_key=api_key, client=client)
+        except (JevError, httpx.HTTPError, ValueError) as error:
             return {"id": row.id, "error": str(error)}
-        return {
-            "id": row.id,
-            "questions": questions.VERSION,
-            "model": response.get("model"),
-            "answers": response["answers"],
-            "usage": response.get("usage"),
-            "ms": round((time.perf_counter() - started) * 1000),
-        }
+        return {"id": row.id, **result.to_dict()}
 
     with httpx.Client(timeout=120) as client, ThreadPoolExecutor(workers) as pool:
         for future in as_completed(pool.submit(ask, client, row) for row in todo):
