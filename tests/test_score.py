@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from s1cr import provenance
 from s1cr.report import write_report
 from s1cr.score import score
 from s1cr.swrbench import FileDiff, Row
@@ -94,3 +95,18 @@ def test_an_unfinished_run_is_refused(runs):
     (runs / "r1" / "answers.jsonl").write_text("\n".join(lines[1:]) + "\n")
     with pytest.raises(ValueError, match="rerun it to finish"):
         score(make_rows(), runs, "r1")
+
+
+def test_stability_only_groups_repetitions_of_the_same_commit_and_configuration(tmp_path, monkeypatch):
+    rows = make_rows()
+    for name, commit in (("baseline", "a"), ("repeat", "a"), ("candidate", "b")):
+        monkeypatch.setattr(
+            provenance, "git_snapshot", lambda commit=commit: {"commit": commit * 40, "dirty": False}
+        )
+        path = tmp_path / name
+        provenance.prepare(path, rows, "jev-1.13.0", 4)
+        entries = [answer(row, 0) | {"questions": "v1"} for row in rows if row.excluded is None]
+        (path / "answers.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    results = score(rows, tmp_path, "baseline")
+    assert results.stability.runs == ["baseline", "repeat"]
+    assert score(rows, tmp_path, "candidate").stability is None

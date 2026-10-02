@@ -6,13 +6,13 @@ measure how much the answers move when the same pull request is asked again.
 
 import statistics
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 
 import numpy as np
 
-from . import jev, metrics, questions
+from . import jev, metrics, provenance, questions
 from .swrbench import CATEGORIES, SOURCE_COMMIT, SOURCE_REPO, Row
 
 PRICE_PER_MILLION_INPUT = 0.042  # USD, TypeSafe's quoted price for Jev input tokens
@@ -162,9 +162,25 @@ def halves(right: np.ndarray, confidence: np.ndarray) -> tuple[float, float]:
     )
 
 
+def category_cases(rows: list[Row]) -> list[Row]:
+    return [row for row in rows if len(row.categories) == 1]
+
+
+def file_cases(rows: list[Row]) -> list[Row]:
+    return [row for row in rows if row.changes_requested and len(row.files) > 1 and row.fault_files]
+
+
+def file_correct(row: Row, answer: dict) -> bool:
+    options = {f"f{i}": file.path for i, file in enumerate(row.files)}
+    choice = answer["answers"]["fault_file"]["choice"]
+    if choice not in options:
+        raise ValueError(f"invalid file choice {choice!r} for {row.id}")
+    return options[choice] in row.fault_files
+
+
 def problem_type(rows: list[Row], answers: dict[str, dict]) -> Choice:
     """For pull requests with exactly one problem: is Jev's most likely kind of change that problem's?"""
-    single = [r for r in rows if len(r.categories) == 1]
+    single = category_cases(rows)
     truth = [r.categories[0].replace(".", "") for r in single]
     picked = [answers[r.id]["answers"]["problem_type"]["choice"] for r in single]
     confidence = np.array([answers[r.id]["answers"]["problem_type"]["confidence"] for r in single])
@@ -196,11 +212,11 @@ def problem_type(rows: list[Row], answers: dict[str, dict]) -> Choice:
 def fault_file(rows: list[Row], answers: dict[str, dict]) -> Choice:
     """For pull requests reviewers asked to change that touch several files, with the problem's file known:
     does Jev's most likely file hold a problem?"""
-    cases = [r for r in rows if r.changes_requested and len(r.files) > 1 and r.fault_files]
+    cases = file_cases(rows)
     right, confidence, largest = [], [], []
     for row in cases:
         answer = answers[row.id]["answers"]["fault_file"]
-        right.append(row.files[int(answer["choice"][1:])].path in row.fault_files)
+        right.append(file_correct(row, answers[row.id]))
         confidence.append(answer["confidence"])
         largest.append(max(row.files, key=lambda f: f.changed).path in row.fault_files)
     right_, confidence_ = np.array(right), np.array(confidence)
@@ -224,6 +240,8 @@ def stability(rows: list[Row], runs: dict[str, dict[str, dict]]) -> Stability | 
         return None
     names = sorted(runs)
     ids = [r.id for r in rows if all(r.id in runs[name] for name in names)]
+    if not ids:
+        return None
     out = Stability(names, len(ids), {}, {}, {}, {})
     for key in ("changes_requested", "functional_defect"):
         values = np.array([[noul(runs[name][i], key) for name in names] for i in ids])
@@ -258,6 +276,34 @@ def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
     runs = {path.parent.name: jev.load(path) for path in sorted(runs_dir.glob("*/answers.jsonl"))}
     if primary not in runs:
         raise FileNotFoundError(f"no run named {primary} in {runs_dir}")
+    receipts = {
+        name: provenance.read(runs_dir / name) for name in runs if (runs_dir / name / "run.json").exists()
+    }
+    if primary in receipts:
+        receipt = receipts[primary]
+        all_rows = provenance.select_rows(receipt, all_rows)
+        runs = {
+            name: {
+                entry["id"]: entry
+                for entry in provenance.records(runs_dir / name, metadata)
+                if "answers" in entry
+            }
+            for name, metadata in receipts.items()
+            if provenance.identity(metadata) == provenance.identity(receipt)
+        }
+    else:
+        # Historical runs have no Git receipt. Keep them together only when their
+        # recorded model/question signatures match, and never mix in new runs.
+        def signature(answers: dict) -> set[tuple]:
+            return {(answer.get("model"), answer.get("questions")) for answer in answers.values()}
+
+        expected = signature(runs[primary])
+        runs = {
+            name: answers
+            for name, answers in runs.items()
+            if name not in receipts and signature(answers) == expected
+        }
+    all_rows = [replace(row) for row in all_rows]
     answers = runs[primary]
     refused = jev.refused(runs_dir / primary / "answers.jsonl")
     for row in all_rows:
