@@ -175,7 +175,7 @@ def test_a_package_is_listed_on_the_apps_path_grouped_by_subcommand():
 
 def test_one_file_is_listed_top_to_bottom_and_a_package_on_the_path(monkeypatch, capsys):
     monkeypatch.chdir(APP)
-    monkeypatch.setattr(decisions, "entry_point", lambda pyproject=None: ("app", "cli.main"))
+    monkeypatch.setattr(decisions, "entry_point", lambda pyproject=None: ("app", ["app", "cli"], "main"))
     assert decisions.main(["work.py", "--limit", "9"]) == 0
     file_order = [
         line.split("`")[1] for line in capsys.readouterr().out.splitlines() if line.startswith(("⚪", "🟡"))
@@ -184,7 +184,7 @@ def test_one_file_is_listed_top_to_bottom_and_a_package_on_the_path(monkeypatch,
     assert decisions.main([".", "--limit", "9"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("**`app`**\n\n⚪ **`cli.main`** — no decisions")
-    assert "**Not reached from `app`**\n\n⚪ **`work.unused`**" in out
+    assert "**Not reached from any entry point in `app`**\n\n⚪ **`work.unused`**" in out
 
 
 def test_touched_functions_keep_their_whole_path_and_straight_line_code_is_left_out(tmp_path):
@@ -213,3 +213,22 @@ def test_touched_functions_keep_their_whole_path_and_straight_line_code_is_left_
     assert [decisions.render(e.fn, 9, before=e.before) for e in emptied] == [
         "⚪ **`m.edited`** — no decisions (was 1)"
     ]
+
+
+def test_scripts_are_grouped_by_their_main_and_the_rest_comes_last(monkeypatch):
+    monkeypatch.setattr(decisions, "entry_point", lambda pyproject=None: None)
+    tools = ROOT / "tests" / "fixtures" / "tools"
+    entries = [
+        decisions.Entry(fn) for path in decisions.python_files([str(tools)]) for fn in functions_of(path)
+    ]
+    text = decisions.arrange(entries, 9)
+    assert text.split("\n\n")[:3] == [
+        "**`python -m tests.fixtures.tools.one`**",
+        "⚪ **`one.main`** — 1 of 9 decisions\n- **if** arguments were given → ↩ returns `two.count(argv)`  L7",
+        "⚪ **`two.count`** — 2 of 9 decisions\n- **for each** item  L6\n  - **if** a real item  L7",
+    ]
+    assert "**Not reached from any entry point in `tests.fixtures.tools`**\n\n⚪ **`one.spare`**" in text
+
+
+def functions_of(path):
+    return decisions.functions(path, path.read_text())

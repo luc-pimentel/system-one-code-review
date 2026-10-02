@@ -66,18 +66,18 @@ continues to follow [`worktree-repos/scripts/review/jev-review.mjs`](https://git
 
 Every pull request runs `ruff check`, `ruff format --check` and `pytest`, and gets one comment that
 sums them up and lists the functions the pull request touched, decision by decision. A decision is
-what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` carries a comment
-that reads as its condition in plain words, so the list reads like prose:
+what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` and `scripts/` carries a
+comment that reads as its condition in plain words, so the list reads like prose:
 
 ```sh
 uv run python -m scripts.decisions src/s1cr/github.py   # one file, top to bottom
-uv run python -m scripts.decisions src                   # the package, in the order `s1cr` reaches it
+uv run python -m scripts.decisions                       # src and scripts, in the order their entry points reach them
 uv run python -m scripts.decisions --changed main        # what this branch changed
 ```
 
-The package and the pull request comment list functions in the order the `s1cr` command reaches them,
-grouped by subcommand, with the caller named when it is not the subcommand itself. Functions nothing
-reaches from `s1cr` come last.
+The package and the pull request comment list functions in the order their entry point reaches them:
+`s1cr`'s subcommands for `src/`, each script's `main` for `scripts/`, with the caller named when it is not
+the entry point itself. Functions nothing reaches come last.
 
 ## How the benchmark works
 

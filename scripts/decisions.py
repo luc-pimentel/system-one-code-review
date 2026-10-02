@@ -195,8 +195,9 @@ class Walker:
         self.decision(node.lineno, node.body[0].lineno - 1, depth, kind, self.src.segment(node.test), what)
         self.walk(node.body[:-1] if what else node.body, depth + 1)
         orelse = node.orelse
+        # an elif: one `if` in the else, at the same indentation
         if len(orelse) == 1 and isinstance(orelse[0], ast.If) and orelse[0].col_offset == node.col_offset:
-            self.branch(orelse[0], depth, "or if")  # an elif
+            self.branch(orelse[0], depth, "or if")
         elif orelse:  # an else
             what = outcome(self.src, orelse)
             self.out.append(Decision(orelse[0].lineno, depth, "otherwise", "", outcome=what, counted=False))
@@ -339,27 +340,39 @@ class Entry:
     new: bool = False
 
 
-def entry_point(pyproject: Path = Path("pyproject.toml")) -> tuple[str, str] | None:
-    """The console script and the function it starts, from `[project.scripts]`: (`s1cr`, `cli.main`)."""
+def entry_point(pyproject: Path = Path("pyproject.toml")) -> tuple[str, list[str], str] | None:
+    """The console script from `[project.scripts]`: its name, module path and function."""
     if not pyproject.exists():  # no project file
         return None
     scripts = tomllib.loads(pyproject.read_text()).get("project", {}).get("scripts", {})
     for script, target in scripts.items():  # the first script is the app
         module, _, function = target.partition(":")
-        return script, f"{module.rsplit('.', 1)[-1]}.{function}"
+        return script, module.split("."), function
     return None
 
 
-def import_map(tree: ast.Module) -> dict[str, tuple[str, str]]:
-    """Local names from relative imports: `from . import github` and `from .report import write_report`."""
+def module_name(path: Path) -> str:
+    """`scripts/decisions.py` as `scripts.decisions`, relative to the working directory when under it."""
+    shown = path.resolve()
+    if shown == Path.cwd():  # the working directory itself
+        return shown.name
+    if shown.is_relative_to(Path.cwd()):  # a path under the working directory
+        shown = shown.relative_to(Path.cwd())
+    return ".".join(shown.with_suffix("").parts)
+
+
+def import_map(tree: ast.Module, known: set[str]) -> dict[str, tuple[str, str]]:
+    """Local names from imports: `from . import github`, `from scripts import decisions`, `from .x import y`."""
     names = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level:  # a relative import, anywhere in the module
-            for alias in node.names:
-                kind, target = (
-                    ("module", alias.name) if node.module is None else ("name", f"{node.module}.{alias.name}")
-                )
-                names[alias.asname or alias.name] = (kind, target)
+        if not isinstance(node, ast.ImportFrom):  # only `from ... import ...` can name a sibling
+            continue
+        package = (node.module or "").rsplit(".", 1)[-1]
+        for alias in node.names:
+            if package not in known and alias.name in known:  # a sibling module
+                names[alias.asname or alias.name] = ("module", alias.name)
+            else:
+                names[alias.asname or alias.name] = ("name", f"{package}.{alias.name}")
     return names
 
 
@@ -368,13 +381,15 @@ def subcommand_parsers(node: ast.AST) -> dict[str, str]:
     parsers = {}
     for sub in ast.walk(node):
         call = sub.value if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Call) else None
+        # not an `add_parser(...)` call being assigned
         if (
             not call
             or not isinstance(call.func, ast.Attribute)
             or call.func.attr != "add_parser"
             or not call.args
         ):
-            continue  # not a parser being made
+            continue
+        # the subcommand is a literal and lands in one plain variable
         if (
             isinstance(call.args[0], ast.Constant)
             and len(sub.targets) == 1
@@ -403,11 +418,12 @@ class CallGraph:
         self.nodes: dict[str, ast.AST] = {}
         self.targets: dict[str, list[str]] = {}
         self.imports: dict[str, dict[str, tuple[str, str]]] = {}
+        self.modules = [path.stem for path in paths if path.stem != "__init__"]
         for path in paths:
             if path.stem == "__init__":  # a package marker, not a module
                 continue
             tree = ast.parse(path.read_text())
-            self.imports[path.stem] = import_map(tree)
+            self.imports[path.stem] = import_map(tree, set(self.modules))
             for node in tree.body:
                 self.index(path.stem, node)
 
@@ -489,7 +505,7 @@ class CallGraph:
                         (t, parsers.get(receiver, t.split(".")[-1]))
                         for t in self.resolve(module, keyword.value)
                     )
-        return found or [(target, target.split(".")[-1]) for target in self.edges(entry)]
+        return found
 
 
 class Layout:
@@ -550,21 +566,47 @@ class Layout:
         )
 
 
-def arrange(
-    entries: list[Entry], paths: list[str], limit: int, link_base: str, app: tuple[str, str] | None
-) -> str:
-    """Entries on the app's path when there is an app, else in file order."""
-    if app is None:  # no console script to follow
-        return "\n\n".join(render(e.fn, limit, link_base, before=e.before, new=e.new) for e in entries)
-    roots = sorted({str(path.parent) for path in python_files(paths)})
-    return Layout(CallGraph(python_files(roots)), *app).render(entries, limit, link_base)
+def apps(
+    directory: Path, graph: CallGraph, console: tuple[str, list[str], str] | None
+) -> list[tuple[str, str]]:
+    """The entry points of one directory: the console script when it lives here, else each module with a main."""
+    if console:  # the project has a console script
+        script, parts, function = console
+        package = parts[-2] if len(parts) > 1 else directory.name
+        if directory.name == package and (directory / f"{parts[-1]}.py").exists():  # it lives here
+            return [(script, f"{parts[-1]}.{function}")]
+    stems = [stem for stem in graph.modules if f"{stem}.main" in graph.nodes]
+    return [(f"python -m {module_name(directory / f'{stem}.py')}", f"{stem}.main") for stem in sorted(stems)]
+
+
+def arrange(entries: list[Entry], limit: int, link_base: str = "") -> str:
+    """Entries by directory, each on its entry points' paths; what no entry point reaches comes last."""
+    console = entry_point()
+    by_directory: dict[Path, list[Entry]] = {}
+    for item in entries:
+        by_directory.setdefault(item.fn.path.resolve().parent, []).append(item)
+    sections = []
+    for directory, own in by_directory.items():
+        graph = CallGraph(python_files([str(directory)]))
+        left = list(own)
+        for script, entry in apps(directory, graph, console):
+            reached = graph.reach(entry)
+            mine = [item for item in left if item.fn.label in reached]
+            if mine:  # this entry point reaches some of them
+                sections.append(Layout(graph, script, entry).render(mine, limit, link_base))
+                left = [item for item in left if item not in mine]
+        if left:  # nothing here reaches them
+            heading = f"**Not reached from any entry point in `{module_name(directory)}`**"
+            blocks = [render(e.fn, limit, link_base, before=e.before, new=e.new) for e in left]
+            sections.append(heading + "\n\n" + "\n\n".join(blocks))
+    return "\n\n".join(sections)
 
 
 def report(paths: list[str], limit: int, link_base: str = "", *, order: str = "path") -> str:
     entries = [Entry(fn) for path in python_files(paths) for fn in functions(path, path.read_text())]
     if order == "file":  # top to bottom, as in the editor
         return "\n\n".join(render(e.fn, limit, link_base) for e in entries)
-    return arrange(entries, paths, limit, link_base, entry_point())
+    return arrange(entries, limit, link_base)
 
 
 def touched(old: dict[str, Function], new: list[Function]) -> list[Entry]:
@@ -596,7 +638,7 @@ def changed_report(base: str, paths: list[str], limit: int, link_base: str = "")
         )
     if not entries and not removed:  # nothing to show
         return "No function changed."
-    body = arrange(entries, paths, limit, link_base, entry_point()) if entries else ""
+    body = arrange(entries, limit, link_base) if entries else ""
     return "\n\n".join(part for part in (body, "\n".join(removed)) if part)
 
 
@@ -616,7 +658,7 @@ def limits(pyproject: Path = Path("pyproject.toml")) -> dict[str, int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", default=["src"], help="files or directories (default: src)")
+    parser.add_argument("paths", nargs="*", default=["src", "scripts"], help="files or directories")
     parser.add_argument(
         "--changed", metavar="BASE", help="only functions whose decisions differ from this revision"
     )

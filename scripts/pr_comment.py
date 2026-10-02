@@ -176,7 +176,7 @@ def changed_section(env: dict, limits: dict, link_base: str) -> str:
     known = subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], capture_output=True, check=False)
     if not base or known.returncode != 0:  # no base to compare with, as on a push to a new branch
         return "No base commit to compare with."
-    return decisions.changed_report(base, ["src"], limits["decisions"], link_base)
+    return decisions.changed_report(base, ["src", "scripts"], limits["decisions"], link_base)
 
 
 def build(env: dict, previous: str | None) -> str:
@@ -189,7 +189,7 @@ def build(env: dict, previous: str | None) -> str:
         Path(env.get("CHECKS_DIR", "checks")),
         previous,
         changed=changed,
-        top=highest(["src"]),
+        top=highest(["src", "scripts"]),
         limits=limits,
     )
 
