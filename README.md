@@ -62,6 +62,23 @@ are stripped by `Row.review_input()`. `ReviewResult` preserves the raw Jev answe
 the benchmark adds the row ID when saving it to the existing `answers.jsonl` format. The retry policy
 continues to follow [`worktree-repos/scripts/review/jev-review.mjs`](https://github.com/luc-pimentel/worktree-repos/blob/main/scripts/review/jev-review.mjs).
 
+## Checks
+
+Every pull request runs `ruff check`, `ruff format --check` and `pytest`, and gets one comment that
+sums them up and lists the functions the pull request touched, decision by decision. A decision is
+what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` and `scripts/` carries a
+comment that reads as its condition in plain words, so the list reads like prose:
+
+```sh
+uv run python -m scripts.decisions src/s1cr/github.py   # one file, top to bottom
+uv run python -m scripts.decisions                       # src and scripts, in the order their entry points reach them
+uv run python -m scripts.decisions --changed main        # what this branch changed
+```
+
+The package and the pull request comment list functions in the order their entry point reaches them:
+`s1cr`'s subcommands for `src/`, each script's `main` for `scripts/`, with the caller named when it is not
+the entry point itself. Functions nothing reaches come last.
+
 ## How the benchmark works
 
 - **Data:** [SWR-Bench](https://github.com/ZZR0/SWRench) (MIT), pinned to one commit: 500 pull requests

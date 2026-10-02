@@ -31,17 +31,19 @@ def call(client: httpx.Client, request: dict, api_key: str, attempts: int = 3) -
     error = "no attempt made"
     for attempt in range(attempts):
         response = client.post(API_URL, json=request, headers={"Authorization": f"Bearer {api_key}"})
-        if response.status_code == 200:
+        if response.status_code == 200:  # Jev answered
             return response.json()
         error = f"Jev HTTP {response.status_code}: {response.text[:300]}"
-        if response.status_code != 429 and response.status_code < 500:
+        if (
+            response.status_code != 429 and response.status_code < 500
+        ):  # a client error that retrying will not fix
             break
         time.sleep(0.5 * (attempt + 1))
     raise JevError(error)
 
 
 def review(
-    input: ReviewInput,
+    review_input: ReviewInput,
     config: ReviewConfig,
     *,
     api_key: str,
@@ -52,15 +54,19 @@ def review(
     A caller may share an HTTP client across reviews; otherwise this call owns its client.
     The size check matches the original benchmark's preflight check exactly.
     """
-    if not api_key:
+    if not api_key:  # no API key was given
         raise ValueError("TYPESAFE_API_KEY is not set")
-    if not input.files:
+    if not review_input.files:  # the pull request has no diff to review
         raise ValueError("no file changes")
-    if sum(len(f.patch) + len(f.path) for f in input.files) + len(input.title) > MAX_STATE_CHARS:
+    # the diff is over Jev's size limit
+    if (
+        sum(len(f.patch) + len(f.path) for f in review_input.files) + len(review_input.title)
+        > MAX_STATE_CHARS
+    ):
         raise ValueError("too large for one Jev call")
     started = time.perf_counter()
     with nullcontext(client) if client is not None else httpx.Client(timeout=120) as http:
-        response = call(http, questions.request(input, config.model), api_key)
+        response = call(http, questions.request(review_input, config.model), api_key)
     return ReviewResult(
         questions=questions.VERSION,
         model=response.get("model"),
@@ -72,7 +78,7 @@ def review(
 
 def done(output: Path) -> set[str]:
     """Pull requests that already have an answer in this run."""
-    if not output.exists():
+    if not output.exists():  # nothing was answered yet
         return set()
     lines = [json.loads(line) for line in output.read_text().splitlines() if line]
     return {line["id"] for line in lines if "answers" in line}
@@ -93,7 +99,7 @@ def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int 
     def ask(client: httpx.Client, row: "Row") -> dict:
         try:
             result = review(row.review_input(), config, api_key=api_key, client=client)
-            if result.model != model:
+            if result.model != model:  # Jev answered with a different model than requested
                 return {
                     "id": row.id,
                     "error": f"requested model {model}, but Jev returned {result.model}",
@@ -101,7 +107,7 @@ def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int 
                     "usage": result.usage,
                     "ms": result.ms,
                 }
-        except (JevError, httpx.HTTPError, ValueError) as error:
+        except (JevError, httpx.HTTPError, ValueError) as error:  # the call failed or was refused
             return {"id": row.id, "error": str(error)}
         return {"id": row.id, **result.to_dict()}
 
@@ -110,11 +116,11 @@ def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int 
             result = future.result()
             with lock, output.open("a") as out:
                 out.write(json.dumps(result) + "\n")
-            if "answers" in result:
+            if "answers" in result:  # the call succeeded
                 ok += 1
             else:
                 failed += 1
-            if (ok + failed) % 50 == 0:
+            if (ok + failed) % 50 == 0:  # another 50 calls are done
                 print(f"  {ok + failed}/{len(todo)} ({failed} failed)")
     return ok, failed
 
@@ -123,9 +129,9 @@ def load(output: Path) -> dict[str, dict]:
     """The answered calls of one run, by pull request id; later lines win over earlier ones."""
     answered: dict[str, dict] = {}
     for line in output.read_text().splitlines():
-        if line:
+        if line:  # the line is not blank
             result = json.loads(line)
-            if "answers" in result:
+            if "answers" in result:  # the call succeeded
                 answered[result["id"]] = result
     return answered
 
@@ -135,7 +141,7 @@ def refused(output: Path) -> set[str]:
     in `swrbench.MAX_STATE_CHARS` only approximates."""
     latest: dict[str, dict] = {}
     for line in output.read_text().splitlines():
-        if line:
+        if line:  # the line is not blank
             result = json.loads(line)
             latest[result["id"]] = result
     return {i for i, result in latest.items() if "max_tokens_exceeded" in result.get("error", "")}

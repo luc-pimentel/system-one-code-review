@@ -173,7 +173,7 @@ def file_cases(rows: list[Row]) -> list[Row]:
 def file_correct(row: Row, answer: dict) -> bool:
     options = {f"f{i}": file.path for i, file in enumerate(row.files)}
     choice = answer["answers"]["fault_file"]["choice"]
-    if choice not in options:
+    if choice not in options:  # Jev picked a file that is not in the pull request
         raise ValueError(f"invalid file choice {choice!r} for {row.id}")
     return options[choice] in row.fault_files
 
@@ -236,11 +236,11 @@ def fault_file(rows: list[Row], answers: dict[str, dict]) -> Choice:
 
 
 def stability(rows: list[Row], runs: dict[str, dict[str, dict]]) -> Stability | None:
-    if len(runs) < 2:
+    if len(runs) < 2:  # only one run: nothing to compare
         return None
     names = sorted(runs)
     ids = [r.id for r in rows if all(r.id in runs[name] for name in names)]
-    if not ids:
+    if not ids:  # no pull request was answered in every run
         return None
     out = Stability(names, len(ids), {}, {}, {}, {})
     for key in ("changes_requested", "functional_defect"):
@@ -274,12 +274,12 @@ def cost(answers: dict[str, dict]) -> Cost:
 
 def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
     runs = {path.parent.name: jev.load(path) for path in sorted(runs_dir.glob("*/answers.jsonl"))}
-    if primary not in runs:
+    if primary not in runs:  # the primary run does not exist
         raise FileNotFoundError(f"no run named {primary} in {runs_dir}")
     receipts = {
         name: provenance.read(runs_dir / name) for name in runs if (runs_dir / name / "run.json").exists()
     }
-    if primary in receipts:
+    if primary in receipts:  # the primary run is recorded with a Git receipt
         receipt = receipts[primary]
         all_rows = provenance.select_rows(receipt, all_rows)
         runs = {
@@ -307,11 +307,11 @@ def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
     answers = runs[primary]
     refused = jev.refused(runs_dir / primary / "answers.jsonl")
     for row in all_rows:
-        if row.excluded is None and row.id in refused:
+        if row.excluded is None and row.id in refused:  # Jev refused this pull request as too long
             row.excluded = "over Jev's token limit"
     kept = [r for r in all_rows if r.excluded is None]
     rows = [r for r in kept if r.id in answers]
-    if len(rows) != len(kept):
+    if len(rows) != len(kept):  # the primary run did not answer every kept pull request
         raise ValueError(
             f"run {primary} answered {len(rows)} of {len(kept)} pull requests; rerun it to finish"
         )

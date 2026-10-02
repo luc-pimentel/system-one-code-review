@@ -48,11 +48,11 @@ def readable(pr: PullRequest, result: ReviewResult) -> str:
             lines.append(f"  {probability:.1%}  {names[option]}")
 
     choice("Change category", answers["problem_type"], category_names)
-    if "fault_file" in answers:
+    if "fault_file" in answers:  # the file question was asked
         choice("File most likely to need changes", answers["fault_file"], file_names)
     else:
         lines.append(f"Only changed file: {pr.input.files[0].path} (file-choice question not asked)")
-    if result.usage:
+    if result.usage:  # Jev reported token usage
         lines.append(
             f"Tokens: {result.usage.get('input_tokens', 'unknown')} input, "
             f"{result.usage.get('output_tokens', 'unknown')} output"

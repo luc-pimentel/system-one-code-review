@@ -31,8 +31,18 @@ dev = [
 line-length = 110
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = [
+    "E", "F", "I", "UP", "B",
+    "SIM", "C4", "PTH", "RET", "PIE", "PGH", "ERA", "N", "DTZ", "PERF",
+    "RUF", "PT", "A",
+    "C90", "PLR0912", "PLR0915",  # one function, one job: branches and statements stay bounded
+]
 ignore = ["E501"]  # the formatter owns line length; long strings stay readable
+allowed-confusables = ["–", "−", "×"]  # typography in report text, not typos
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

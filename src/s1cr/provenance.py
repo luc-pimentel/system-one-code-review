@@ -24,9 +24,13 @@ def git_snapshot(root: Path = SOURCE_ROOT) -> dict:
             return subprocess.run(
                 ["git", "-C", str(root), *args], capture_output=True, text=True, check=True
             ).stdout.strip()
-        except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        except (
+            FileNotFoundError,
+            subprocess.CalledProcessError,
+        ) as error:  # git is missing or this is not a checkout
             raise ValueError("run from a Git checkout of system-one-code-review") from error
 
+    # the source sits inside another repository's checkout
     if Path(git("rev-parse", "--show-toplevel")).resolve() != root.resolve():
         raise ValueError("the executed s1cr source must belong to its own Git checkout")
     commit = git("rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
@@ -59,7 +63,7 @@ def identity(receipt: dict) -> dict:
 
 def read(run_dir: Path) -> dict:
     path = run_dir / "run.json"
-    if not path.exists():
+    if not path.exists():  # the run has no receipt
         raise ValueError(
             f"{run_dir} has no run.json; start a new recorded run (legacy runs still support score)"
         )
@@ -74,9 +78,10 @@ def read(run_dir: Path) -> dict:
         "eligible_ids",
         "created_at",
     }
-    if not isinstance(receipt, dict) or not required <= receipt.keys():
+    if not isinstance(receipt, dict) or not required <= receipt.keys():  # the receipt lacks a required field
         raise ValueError(f"invalid run receipt: {path}")
     ids, eligible = receipt["case_ids"], receipt["eligible_ids"]
+    # case IDs repeat, or an eligible ID is not a case
     if len(set(ids)) != len(ids) or len(set(eligible)) != len(eligible) or not set(eligible) <= set(ids):
         raise ValueError(f"invalid case IDs in {path}")
     return receipt
@@ -84,14 +89,15 @@ def read(run_dir: Path) -> dict:
 
 def select_rows(receipt: dict, all_rows: list[Row]) -> list[Row]:
     indexed = {row.id: row for row in all_rows}
-    if len(indexed) != len(all_rows):
+    if len(indexed) != len(all_rows):  # two benchmark rows share an ID
         raise ValueError("benchmark rows contain duplicate IDs")
     missing = set(receipt["case_ids"]) - indexed.keys()
-    if missing:
+    if missing:  # the receipt names cases the rows do not have
         raise ValueError(f"benchmark rows are missing {len(missing)} recorded cases")
-    rows = [indexed[id] for id in receipt["case_ids"]]
-    if rows_hash(rows) != receipt["dataset"]["rows_sha256"]:
+    rows = [indexed[case_id] for case_id in receipt["case_ids"]]
+    if rows_hash(rows) != receipt["dataset"]["rows_sha256"]:  # the rows differ from the ones the run used
         raise ValueError("benchmark inputs or labels differ from the recorded run")
+    # a different set of rows is eligible now
     if {row.id for row in rows if row.excluded is None} != set(receipt["eligible_ids"]):
         raise ValueError("benchmark eligibility differs from the recorded run")
     return rows
@@ -100,16 +106,18 @@ def select_rows(receipt: dict, all_rows: list[Row]) -> list[Row]:
 def records(run_dir: Path, receipt: dict) -> list[dict]:
     """Validate all saved attempts before resuming or comparing a recorded run."""
     path = run_dir / "answers.jsonl"
-    if not path.exists():
+    if not path.exists():  # nothing was answered yet
         return []
     eligible = set(receipt["eligible_ids"])
     entries = []
     for number, line in enumerate(path.read_text().splitlines(), 1):
-        if not line:
+        if not line:  # the line is blank
             continue
         entry = json.loads(line)
+        # the entry is for an unknown case, or is neither an answer nor an error
         if entry.get("id") not in eligible or not ("answers" in entry or "error" in entry):
             raise ValueError(f"unexpected result in {path}:{number}")
+        # an answer came from another model or question version
         if "answers" in entry and (
             entry.get("model") != receipt["model"] or entry.get("questions") != receipt["questions"]
         ):
@@ -120,15 +128,15 @@ def records(run_dir: Path, receipt: dict) -> list[dict]:
 
 def prepare(run_dir: Path, rows: list[Row], model: str, workers: int) -> dict:
     """Create a receipt once, or require a matching receipt before appending answers."""
-    if not re.fullmatch(r"jev-\d+\.\d+\.\d+", model):
+    if not re.fullmatch(r"jev-\d+\.\d+\.\d+", model):  # the model is not pinned to a version
         raise ValueError("benchmark runs require a pinned model, e.g. --model jev-1.13.0")
-    if workers < 1:
+    if workers < 1:  # fewer than one worker was asked for
         raise ValueError("workers must be at least 1")
     ids = [row.id for row in rows]
-    if not ids or len(set(ids)) != len(ids):
+    if not ids or len(set(ids)) != len(ids):  # the case IDs are empty or repeat
         raise ValueError("a run needs a nonempty set of unique benchmark case IDs")
     snapshot = git_snapshot()
-    if snapshot["dirty"]:
+    if snapshot["dirty"]:  # the source has uncommitted changes
         raise ValueError("commit source changes before benchmarking, or use a clean Git worktree")
     expected = {
         "git_commit": snapshot["commit"],
@@ -140,14 +148,14 @@ def prepare(run_dir: Path, rows: list[Row], model: str, workers: int) -> dict:
         "eligible_ids": [row.id for row in rows if row.excluded is None],
     }
     path = run_dir / "run.json"
-    if path.exists():
+    if path.exists():  # a receipt already exists -> reuse it
         saved = read(run_dir)
-        if identity(saved) != expected:
+        if identity(saved) != expected:  # the saved receipt differs from this run's settings
             raise ValueError("run commit, model, inputs, or execution settings changed; use a new run name")
         records(run_dir, saved)
         return saved
     answers = run_dir / "answers.jsonl"
-    if answers.exists() and answers.stat().st_size:
+    if answers.exists() and answers.stat().st_size:  # answers were saved without a receipt
         raise ValueError(f"{run_dir} has answers without provenance; use a new run name")
     receipt = {**expected, "created_at": datetime.now(UTC).isoformat()}
     run_dir.mkdir(parents=True, exist_ok=True)

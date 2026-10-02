@@ -37,7 +37,8 @@ def test_comparison_scores_both_commits_with_the_same_evaluator(recorded_runs):
     result = compare(rows, baseline, candidate)
     assert result["baseline"]["git_commit"] == "a" * 40
     assert result["candidate"]["git_commit"] == "b" * 40
-    assert result["cases"]["selected"] == 10 and result["cases"]["eligible"] == 9
+    assert result["cases"]["selected"] == 10
+    assert result["cases"]["eligible"] == 9
     assert result["cases"]["matched"] == 8
     scores = result["metrics"]
     assert scores["functional_auroc"]["baseline"] == scores["functional_auroc"]["candidate"] == 1.0
@@ -45,7 +46,8 @@ def test_comparison_scores_both_commits_with_the_same_evaluator(recorded_runs):
     assert scores["functional_brier"]["delta"] == pytest.approx(0.1375)
     assert scores["category_accuracy"]["n"] == 3
     assert scores["category_accuracy"]["baseline"] == pytest.approx(2 / 3)
-    assert scores["file_accuracy"]["n"] == 2 and scores["file_accuracy"]["baseline"] == 0.5
+    assert scores["file_accuracy"]["n"] == 2
+    assert scores["file_accuracy"]["baseline"] == 0.5
     assert scores["median_ms"]["delta"] == 400
     assert scores["input_tokens"]["delta"] == 8000
     assert scores["estimated_input_usd"]["delta"] == pytest.approx(0.000336)
@@ -64,7 +66,8 @@ def test_failed_and_unattempted_cases_are_visible_and_never_scored_as_success(re
     path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
     result = compare(rows, baseline, candidate)
     assert result["candidate"]["completed"] == 6
-    assert result["candidate"]["failed"] == 2 and result["candidate"]["pending"] == 1
+    assert result["candidate"]["failed"] == 2
+    assert result["candidate"]["pending"] == 1
     assert result["cases"]["baseline_only"] == ["clean-0", "clean-1"]
     assert result["cases"]["matched"] == result["metrics"]["functional_accuracy"]["n"] == 6
     assert result["metrics"]["input_tokens"]["baseline"] == 6000
@@ -86,7 +89,8 @@ def test_empty_overlap_is_reported_without_nan_or_crashing(recorded_runs):
     rows, baseline, candidate = recorded_runs
     (candidate / "answers.jsonl").write_text("")
     result = compare(rows, baseline, candidate)
-    assert result["cases"]["matched"] == 0 and result["candidate"]["pending"] == 9
+    assert result["cases"]["matched"] == 0
+    assert result["candidate"]["pending"] == 9
     assert all(metric["candidate"] is None for metric in result["metrics"].values())
     assert "n/a" in readable(result)
     json.dumps(result, allow_nan=False)
@@ -137,5 +141,5 @@ def test_legacy_runs_are_not_assigned_a_git_commit(recorded_runs):
     rows, baseline, _ = recorded_runs
     legacy = baseline.parent / "legacy"
     legacy.mkdir()
-    with pytest.raises(ValueError, match="no run.json"):
+    with pytest.raises(ValueError, match=r"no run\.json"):
         compare(rows, baseline, legacy)

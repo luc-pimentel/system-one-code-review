@@ -1,0 +1,54 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.12.19"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked
+      - run: mkdir -p checks
+      - id: ruff
+        continue-on-error: true
+        run: uv run ruff check --output-format concise | tee checks/ruff.txt
+      - id: format
+        continue-on-error: true
+        run: uv run ruff format --check | tee checks/format.txt
+      - id: tests
+        continue-on-error: true
+        run: uv run pytest -q | tee checks/pytest.txt
+      - name: Post the checks and the changed functions' decisions as a sticky comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          STEP_RESULTS: ruff=${{ steps.ruff.outcome }} format=${{ steps.format.outcome }} tests=${{ steps.tests.outcome }}
+        run: uv run python -m scripts.pr_comment
+      - name: Fail if a check failed
+        if: always()
+        env:
+          RUFF: ${{ steps.ruff.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          echo "ruff=$RUFF format=$FORMAT tests=$TESTS"
+          [ "$RUFF" = success ] && [ "$FORMAT" = success ] && [ "$TESTS" = success ]

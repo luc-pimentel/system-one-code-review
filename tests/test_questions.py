@@ -16,7 +16,8 @@ def test_every_pull_request_gets_the_yes_no_questions_and_the_kind_of_change():
     assert set(request["questions"]) == {"changes_requested", "functional_defect", "problem_type"}
     for key in ("changes_requested", "functional_defect"):
         asked = request["questions"][key]
-        assert asked["type"] == "noul" and set(asked["criteria"]) == {"true", "false"}
+        assert asked["type"] == "noul"
+        assert set(asked["criteria"]) == {"true", "false"}
 
 
 def test_the_file_question_is_asked_only_when_there_is_a_choice():
@@ -27,7 +28,8 @@ def test_the_file_question_is_asked_only_when_there_is_a_choice():
 def test_kinds_of_change_are_swr_bench_s_categories_with_its_definitions():
     criteria = questions.PROBLEM_TYPE["criteria"]
     assert len(criteria) == len(CATEGORIES) == 11
-    assert questions.OPTIONS["F2"] == "F.2" and criteria["F2"].startswith("Logic: Corrections to errors")
+    assert questions.OPTIONS["F2"] == "F.2"
+    assert criteria["F2"].startswith("Logic: Corrections to errors")
 
 
 def test_jev_reads_the_pull_request_and_nothing_from_its_review():

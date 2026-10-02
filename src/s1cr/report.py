@@ -30,18 +30,21 @@ def pct_interval(ci: tuple[float, float]) -> str:
 
 def shown(name: str, value: float) -> str:
     """An extra Choice measure, formatted by what it is."""
-    if name == "macro F1":
+    if name == "macro F1":  # a score, shown with two decimals
         return f"{value:.2f}"
-    if name.startswith("median"):
+    if name.startswith("median"):  # a count, shown whole
         return f"{value:.0f}"
     return pct(value)
 
 
 def wording(question: dict) -> list[str]:
+    criteria = question.get("criteria", {})
     lines = [f"> {question['instructions']}"]
-    for answer in ("true", "false"):
-        if answer in question.get("criteria", {}):
-            lines.append(f">\n> *{'Yes' if answer == 'true' else 'No'}:* {question['criteria'][answer]}")
+    lines.extend(
+        f">\n> *{'Yes' if answer == 'true' else 'No'}:* {criteria[answer]}"
+        for answer in ("true", "false")
+        if answer in criteria
+    )
     return lines
 
 
@@ -100,12 +103,38 @@ def choice_section(out: list[str], c: Choice, question: dict, asked: str) -> Non
     for name, value in c.extra.items():
         add(f"| {first_upper(name)} | {shown(name, value)} |")
     add("")
-    if c.confusion:
+    if c.confusion:  # there were mistakes to show
         add("Its most common mistakes:\n")
         add("| Reviewers asked for | Jev picked | Times |\n|---|---|---:|")
         for truth, picked, n in c.confusion:
             add(f"| {category(truth)} | {category(picked)} | {n} |")
         add("")
+
+
+def data_section(out: list[str], r: Results) -> None:
+    add = out.append
+    add("## 1. The data\n")
+    eras = ", ".join(f"{n} from {era}" for era, n in sorted(r.eras.items()))
+    add(
+        f"SWR-Bench holds {r.total} pull requests from 12 Python projects. {r.kept} are scored ({eras}); "
+        f"{r.total - r.kept} are left out:\n"
+    )
+    for reason, n in sorted(r.excluded.items(), key=lambda item: -item[1]):
+        add(f"- {n}: {reason}")
+    add("")
+    add(
+        "Jev sees each pull request as its first reviewer did: the title, the description (up to "
+        f"{questions.MAX_DESCRIPTION_CHARS:,} characters) and the diff of every file, as of the last commit "
+        "before the first review. It never sees the review, the later commits or the fixes. GitHub's own diff "
+        "of a pull request shows its final state, fixes included, so for pull requests with several commits "
+        "the reviewed diff comes from comparing the base commit with the last commit before the review.\n"
+    )
+    add(
+        "The labels are what the reviewers asked for. A pull request counts as *changes requested* when a "
+        "reviewer asked for at least one change the author then made; SWR-Bench's annotators sorted each "
+        "request into functional (the code does not work) or evolvability (it works, but could be clearer or "
+        "better built) categories.\n"
+    )
 
 
 def write_report(r: Results, output: Path) -> None:
@@ -142,7 +171,7 @@ def write_report(r: Results, output: Path) -> None:
         + "; ".join(f"{name} {pct(value)}" for name, value in w.baselines.items())
         + " |"
     )
-    if r.stability:
+    if r.stability:  # more than one run was scored
         s = r.stability
         add(
             f"| Asked again | {s.n} × {len(s.runs)} runs | yes/no answers flip for "
@@ -155,28 +184,7 @@ def write_report(r: Results, output: Path) -> None:
     add("")
 
     findings(out, r)
-    add("## 1. The data\n")
-    eras = ", ".join(f"{n} from {era}" for era, n in sorted(r.eras.items()))
-    add(
-        f"SWR-Bench holds {r.total} pull requests from 12 Python projects. {r.kept} are scored ({eras}); "
-        f"{r.total - r.kept} are left out:\n"
-    )
-    for reason, n in sorted(r.excluded.items(), key=lambda item: -item[1]):
-        add(f"- {n}: {reason}")
-    add("")
-    add(
-        "Jev sees each pull request as its first reviewer did: the title, the description (up to "
-        f"{questions.MAX_DESCRIPTION_CHARS:,} characters) and the diff of every file, as of the last commit "
-        "before the first review. It never sees the review, the later commits or the fixes. GitHub's own diff "
-        "of a pull request shows its final state, fixes included, so for pull requests with several commits "
-        "the reviewed diff comes from comparing the base commit with the last commit before the review.\n"
-    )
-    add(
-        "The labels are what the reviewers asked for. A pull request counts as *changes requested* when a "
-        "reviewer asked for at least one change the author then made; SWR-Bench's annotators sorted each "
-        "request into functional (the code does not work) or evolvability (it works, but could be clearer or "
-        "better built) categories.\n"
-    )
+    data_section(out, r)
 
     add("## 2. Would a reviewer ask for changes?\n")
     binary_section(out, r.changes, questions.CHANGES_REQUESTED)
@@ -208,7 +216,7 @@ def write_report(r: Results, output: Path) -> None:
         f"on the {w.n} such pull requests where reviewers asked for changes and the problem's file is known.",
     )
 
-    if r.stability:
+    if r.stability:  # more than one run was scored
         s = r.stability
         add("## 6. Asking again\n")
         add(
@@ -275,8 +283,8 @@ def findings(out: list[str], r: Results) -> None:
     add("## What the numbers say\n")
 
     def ranking(b: Binary) -> str:
-        low, high = b.auroc_ci
-        if low > 0.5:
+        low, _high = b.auroc_ci
+        if low > 0.5:  # the interval clears chance
             return (
                 f"ranks them above chance but not by much (AUROC {b.auroc:.2f})"
                 if b.auroc < 0.7
@@ -285,12 +293,12 @@ def findings(out: list[str], r: Results) -> None:
         return f"ranks them no better than chance (AUROC {b.auroc:.2f}, interval reaching 0.50)"
 
     def probabilities(b: Binary) -> str:
-        if b.brier_ci[0] > b.brier_prevalence:
+        if b.brier_ci[0] > b.brier_prevalence:  # even the interval's low end is worse than a constant
             return (
                 f"its probabilities are worse than a constant: always answering {b.positives / b.n:.2f} scores a "
                 f"Brier of {b.brier_prevalence:.3f} against Jev's {b.brier:.3f}"
             )
-        if b.brier_ci[1] < b.brier_prevalence:
+        if b.brier_ci[1] < b.brier_prevalence:  # even the interval's high end beats a constant
             return f"its probabilities beat a constant (Brier {b.brier:.3f} against {b.brier_prevalence:.3f})"
         return f"its probabilities are no better than a constant (Brier {b.brier:.3f} against {b.brier_prevalence:.3f})"
 
@@ -327,7 +335,7 @@ def findings(out: list[str], r: Results) -> None:
         else f"- **Acting on its own:** trusting only its surest answers keeps errors at 10% or less for up to "
         f"{pct(usable)} of pull requests."
     )
-    if r.stability:
+    if r.stability:  # more than one run was scored
         s = r.stability
         add(
             f"- **Consistency:** asked again, its yes/no answers flip for "

@@ -8,3 +8,6 @@ __pycache__/
 
 # Downloaded dataset and API caches
 data/
+
+# Check outputs captured in CI
+checks/

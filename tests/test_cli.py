@@ -72,17 +72,20 @@ def test_json_command_uses_shared_request_and_keeps_full_precision(review_setup,
     assert data["answers"] == answers
     assert data["file_options"] == {"f0": "tax.py", "f1": "test_tax.py"}
     assert data["category_options"]["F2"] == {"code": "F.2", "name": "Logic"}
-    assert data["questions"] == "v1" and data["model"] == "jev-1.13.0"
-    assert data["usage"]["input_tokens"] == 100 and data["ms"] >= 0
+    assert data["questions"] == "v1"
+    assert data["model"] == "jev-1.13.0"
+    assert data["usage"]["input_tokens"] == 100
+    assert data["ms"] >= 0
     assert calls == [questions.request(pr.input, "jev-1.13.0")]
 
 
 def test_readable_command_shows_scores_and_resolves_choice_options(review_setup, capsys):
-    pr, answers, calls = review_setup
+    _pr, _answers, calls = review_setup
     cli.main(["review", URL])
     output = capsys.readouterr().out
     assert "Reviewed head: " + "h" * 40 in output
-    assert "changes requested: 87.7%" in output and "functional defect: 20.0%" in output
+    assert "changes requested: 87.7%" in output
+    assert "functional defect: 20.0%" in output
     assert "Change category: F.2 Logic (confidence 60.0%)" in output
     assert "File most likely to need changes: test_tax.py (confidence 80.0%)" in output
     assert output.index("70.0%  F.2") < output.index("30.0%  F.4")

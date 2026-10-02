@@ -43,13 +43,16 @@ def test_other_errors_fail_at_once():
 
 
 def test_shared_reviewer_keeps_raw_answers_and_does_not_close_a_borrowed_client():
-    input = ReviewInput("Add tax", "Adds tax.", [FileDiff("a.py", "+tax()", 1)])
+    review_input = ReviewInput("Add tax", "Adds tax.", [FileDiff("a.py", "+tax()", 1)])
     with client([200]) as http:
-        result = jev.review(input, ReviewConfig("jev-1.13.0"), api_key="key", client=http)
+        result = jev.review(review_input, ReviewConfig("jev-1.13.0"), api_key="key", client=http)
         assert not http.is_closed
     assert isinstance(result, ReviewResult)
-    assert result.questions == "v1" and result.model == "jev-1.13.0"
-    assert result.answers == ANSWERS and result.usage == {} and result.ms >= 0
+    assert result.questions == "v1"
+    assert result.model == "jev-1.13.0"
+    assert result.answers == ANSWERS
+    assert result.usage == {}
+    assert result.ms >= 0
 
 
 def test_benchmark_invokes_the_shared_reviewer_without_labels(tmp_path, monkeypatch):
@@ -67,22 +70,24 @@ def test_benchmark_invokes_the_shared_reviewer_without_labels(tmp_path, monkeypa
     seen = []
     result = ReviewResult("v1", "jev-1.13.0", ANSWERS, {"input_tokens": 10}, 25)
 
-    def review(input, config, *, api_key, client):
-        seen.append(input)
-        assert config.model == "jev-1.13.0" and api_key == "key"
+    def review(review_input, config, *, api_key, client):
+        seen.append(review_input)
+        assert config.model == "jev-1.13.0"
+        assert api_key == "key"
         return result
 
     monkeypatch.setattr(jev, "review", review)
     output = tmp_path / "answers.jsonl"
     assert jev.run([row], output, "jev-1.13.0", "key") == (1, 0)
     assert seen == [ReviewInput("Title", "Body", row.files)]
-    assert not hasattr(seen[0], "categories") and not hasattr(seen[0], "changes_requested")
+    assert not hasattr(seen[0], "categories")
+    assert not hasattr(seen[0], "changes_requested")
     assert json.loads(output.read_text()) == {"id": row.id, **result.to_dict()}
 
 
 @pytest.mark.parametrize("files", [[], [FileDiff("big.py", "x" * 100_000, 1)]])
 def test_empty_and_oversized_inputs_fail_before_calling_jev(files):
-    with client([]) as http, pytest.raises(ValueError, match="no file changes|too large"):
+    with client([]) as http, pytest.raises(ValueError, match=r"no file changes|too large"):
         jev.review(ReviewInput("Title", "Body", files), ReviewConfig(), api_key="key", client=http)
 
 
@@ -97,7 +102,8 @@ def test_a_run_resumes_and_records_what_jev_refused(tmp_path, monkeypatch):
     assert jev.run(rows, output, "jev-1.13.0", "key", workers=1) == (2, 0)  # the refused one is asked again
     assert set(jev.load(output)) == {r.id for r in rows}
     lines = [json.loads(line) for line in output.read_text().splitlines()]
-    assert lines[0]["model"] == "jev-1.13.0" and lines[0]["questions"] == "v1"
+    assert lines[0]["model"] == "jev-1.13.0"
+    assert lines[0]["questions"] == "v1"
 
 
 def test_token_limit_refusals_are_told_apart_from_other_failures(tmp_path):
@@ -118,7 +124,8 @@ def test_run_does_not_accept_an_unexpected_model(tmp_path, monkeypatch):
     output = tmp_path / "answers.jsonl"
     assert jev.run([row], output, "jev-1.13.0", "key") == (0, 1)
     result = json.loads(output.read_text())
-    assert result["model"] == "jev-1.14.0" and "answers" not in result
+    assert result["model"] == "jev-1.14.0"
+    assert "answers" not in result
     assert "requested model jev-1.13.0" in result["error"]
 
 
