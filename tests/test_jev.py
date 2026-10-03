@@ -78,7 +78,7 @@ def test_benchmark_invokes_the_shared_reviewer_without_labels(tmp_path, monkeypa
 
     monkeypatch.setattr(jev, "review", review)
     output = tmp_path / "answers.jsonl"
-    assert jev.run([row], output, "jev-1.13.0", "key") == (1, 0)
+    assert jev.run([row], tmp_path, "jev-1.13.0", "key") == (1, 0)
     assert seen == [ReviewInput("Title", "Body", row.files)]
     assert not hasattr(seen[0], "categories")
     assert not hasattr(seen[0], "changes_requested")
@@ -96,10 +96,10 @@ def test_a_run_resumes_and_records_what_jev_refused(tmp_path, monkeypatch):
     statuses = iter([200, 400, 400])
     monkeypatch.setattr(jev, "call", lambda c, r, k: _answer(next(statuses)))
     output = tmp_path / "answers.jsonl"
-    ok, failed = jev.run(rows, output, "jev-1.13.0", "key", workers=1)
+    ok, failed = jev.run(rows, tmp_path, "jev-1.13.0", "key", workers=1)
     assert (ok, failed) == (1, 2)
     monkeypatch.setattr(jev, "call", lambda c, r, k: _answer(200))
-    assert jev.run(rows, output, "jev-1.13.0", "key", workers=1) == (2, 0)  # the refused one is asked again
+    assert jev.run(rows, tmp_path, "jev-1.13.0", "key", workers=1) == (2, 0)  # the refused one is asked again
     assert set(jev.load(output)) == {r.id for r in rows}
     lines = [json.loads(line) for line in output.read_text().splitlines()]
     assert lines[0]["model"] == "jev-1.13.0"
@@ -122,7 +122,7 @@ def test_run_does_not_accept_an_unexpected_model(tmp_path, monkeypatch):
     row = Row("a", "o/r", "2020", "Title", "Body", [FileDiff("a.py", "+x", 1)], False)
     monkeypatch.setattr(jev, "call", lambda *args: _answer(200) | {"model": "jev-1.14.0"})
     output = tmp_path / "answers.jsonl"
-    assert jev.run([row], output, "jev-1.13.0", "key") == (0, 1)
+    assert jev.run([row], tmp_path, "jev-1.13.0", "key") == (0, 1)
     result = json.loads(output.read_text())
     assert result["model"] == "jev-1.14.0"
     assert "answers" not in result
@@ -133,12 +133,12 @@ def test_changed_inputs_cannot_resume_or_call_the_provider(tmp_path, monkeypatch
     row = Row("a", "o/r", "2020", "Title", "Body", [FileDiff("a.py", "+x", 1)], False)
     monkeypatch.setattr(jev, "call", lambda *args: _answer(200))
     output = tmp_path / "answers.jsonl"
-    jev.run([row], output, "jev-1.13.0", "key")
+    jev.run([row], tmp_path, "jev-1.13.0", "key")
     original = output.read_bytes()
     row.description = "Changed inputs"
     monkeypatch.setattr(jev, "call", lambda *args: pytest.fail("must not call Jev"))
     with pytest.raises(ValueError, match="use a new run name"):
-        jev.run([row], output, "jev-1.13.0", "key")
+        jev.run([row], tmp_path, "jev-1.13.0", "key")
     assert output.read_bytes() == original
 
 

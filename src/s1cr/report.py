@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from . import questions
+from .models import Question
 from .score import PRICE_PER_MILLION_INPUT, Binary, Choice, Results
 from .swrbench import CATEGORIES
 
@@ -37,7 +38,8 @@ def shown(name: str, value: float) -> str:
     return pct(value)
 
 
-def wording(question: dict) -> list[str]:
+def wording(question: Question) -> list[str]:
+    """A yes/no question as the report quotes it: the instructions, then what counts as yes and as no."""
     criteria = question.get("criteria", {})
     lines = [f"> {question['instructions']}"]
     lines.extend(
@@ -48,7 +50,8 @@ def wording(question: dict) -> list[str]:
     return lines
 
 
-def binary_section(out: list[str], b: Binary, question: dict) -> None:
+def binary_section(out: list[str], b: Binary, question: Question) -> None:
+    """One yes/no question's section of the report: ranking, calibration, accuracy and the groups."""
     add = out.append
     add("\n".join(wording(question)) + "\n")
     add(
@@ -90,9 +93,10 @@ def binary_section(out: list[str], b: Binary, question: dict) -> None:
     add("")
 
 
-def choice_section(out: list[str], c: Choice, question: dict, asked: str) -> None:
+def choice_section(out: list[str], c: Choice, instructions: str, asked: str) -> None:
+    """One Choice question's section of the report: accuracy against the baselines, and the mistakes."""
     add = out.append
-    add(f"> {question['instructions']}\n")
+    add(f"> {instructions}\n")
     add(f"{asked} Jev's most likely option counts as right when it is {c.label}.\n")
     add("| | Accuracy |\n|---|---:|")
     add(f"| Jev | {pct(c.accuracy)} {pct_interval(c.accuracy_ci)} |")
@@ -138,6 +142,7 @@ def data_section(out: list[str], r: Results) -> None:
 
 
 def write_report(r: Results, output: Path) -> None:
+    """Write the benchmark report: what was measured, each question's section, and what it adds up to."""
     out: list[str] = []
     add = out.append
     runs = r.stability.runs if r.stability else [r.primary]
@@ -202,7 +207,7 @@ def write_report(r: Results, output: Path) -> None:
     choice_section(
         out,
         r.problem_type,
-        questions.PROBLEM_TYPE,
+        questions.PROBLEM_TYPE["instructions"],
         f"Scored on the {t.n} pull requests where reviewers asked for exactly one change. The options are "
         f"SWR-Bench's {len(questions.OPTIONS)} categories, each described with its annotators' definition.",
     )
@@ -211,7 +216,7 @@ def write_report(r: Results, output: Path) -> None:
     choice_section(
         out,
         r.fault_file,
-        {"instructions": questions.FAULT_FILE_INSTRUCTIONS},
+        questions.FAULT_FILE_INSTRUCTIONS,
         f"Asked whenever a pull request changes more than one file, with each file's path as an option; scored "
         f"on the {w.n} such pull requests where reviewers asked for changes and the problem's file is known.",
     )

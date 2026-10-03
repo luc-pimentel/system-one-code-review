@@ -10,10 +10,12 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 import httpx
 
+from . import stores
 from .models import FileDiff, ReviewInput
 from .swrbench import changed_lines
 
@@ -24,10 +26,36 @@ class GitHubError(Exception):
 
 @dataclass
 class PullRequest:
-    url: str
-    base_sha: str
-    head_sha: str
-    input: ReviewInput
+    """A live pull request, as the reviewer reads it."""
+
+    url: str  # the pull request's page on github.com
+    base_sha: str  # the commit it merges into
+    head_sha: str  # the commit that was reviewed
+    input: ReviewInput  # what Jev reads
+
+
+class GitHubRef(TypedDict):
+    """A branch tip as GitHub reports it."""
+
+    sha: str  # the commit the branch points at
+
+
+class GitHubPull(TypedDict):
+    """The fields of GitHub's pull request that a review reads."""
+
+    base: GitHubRef  # the branch it merges into
+    head: GitHubRef  # its own branch
+    title: str  # its title
+    body: str | None  # its description, None when it has none
+    changed_files: int  # how many files it changes
+
+
+class GitHubFile(TypedDict):
+    """One changed file as GitHub's pull request files API lists it."""
+
+    filename: str  # the file's path
+    patch: NotRequired[str]  # its diff hunks; missing for binary, rename-only and oversized changes
+    changes: int  # added plus removed lines, as GitHub counts them
 
 
 def parse_pr_url(url: str) -> tuple[str, int]:
@@ -39,8 +67,9 @@ def parse_pr_url(url: str) -> tuple[str, int]:
     return match[1], int(match[2])
 
 
-def _api(endpoint: str, *, paginate: bool = False) -> dict | list:
-    command = ["gh", "api", endpoint]
+def _api(endpoint: str, *, paginate: bool = False) -> Any:
+    """One GitHub API call through the GitHub CLI, as parsed JSON."""
+    command = [stores.GH, "api", endpoint]
     if paginate:  # every page is wanted
         command.extend(["--paginate", "--slurp"])
     try:
@@ -63,14 +92,14 @@ def pull_request(url: str) -> PullRequest:
     """
     repo, number = parse_pr_url(url)
     endpoint = f"repos/{repo}/pulls/{number}"
-    before = _api(endpoint)
+    before: GitHubPull = _api(endpoint)
     if not before["changed_files"]:  # the pull request changed no files
         raise GitHubError("pull request has no file changes")
-    pages = _api(f"{endpoint}/files?per_page=100", paginate=True)
+    pages: list[list[GitHubFile]] = _api(f"{endpoint}/files?per_page=100", paginate=True)
     files = [file for page in pages for file in page]
-    after = _api(endpoint)
+    after: GitHubPull = _api(endpoint)
 
-    def snapshot(pr: dict) -> tuple:
+    def snapshot(pr: GitHubPull) -> tuple[str, str, str, str | None, int]:
         return pr["base"]["sha"], pr["head"]["sha"], pr["title"], pr["body"], pr["changed_files"]
 
     if snapshot(before) != snapshot(after):  # the pull request changed while its files were being fetched
@@ -101,14 +130,17 @@ def pull_request(url: str) -> PullRequest:
 
 def token() -> str:
     """The GitHub CLI's token, so the API allows 5,000 requests an hour instead of 60."""
-    return subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True).stdout.strip()
+    command = [stores.GH, "auth", "token"]
+    return subprocess.run(command, capture_output=True, text=True, check=True).stdout.strip()
 
 
 class Comparer:
+    """GitHub's comparison of two commits, cached on disk: the files the reviewed commits changed."""
+
     def __init__(self, cache: Path, github_token: str) -> None:
         self.cache = cache
         self.client = httpx.Client(
-            base_url="https://api.github.com",
+            base_url=stores.GITHUB_API,
             headers={
                 "Authorization": f"Bearer {github_token}",
                 "Accept": "application/vnd.github+json",

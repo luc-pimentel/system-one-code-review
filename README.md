@@ -64,10 +64,24 @@ continues to follow [`worktree-repos/scripts/review/jev-review.mjs`](https://git
 
 ## Checks
 
-Every pull request runs `ruff check`, `ruff format --check` and `pytest`, and gets one comment that
-sums them up and lists the functions the pull request touched, decision by decision. A decision is
-what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` and `scripts/` carries a
-comment that reads as its condition in plain words, so the list reads like prose:
+Every pull request runs `ruff check`, `ruff format --check`, `mypy` and `pytest`, and gets one comment.
+The comment sums up the checks, shows what the pull request changes in what `s1cr` does, and lists the
+functions it touched, decision by decision.
+
+What `s1cr` does is read from the code itself. Each command is a chain of steps: the functions its
+handler reaches, each with the data it takes and gives, the files and services it touches, and the rules
+it keeps (its refusals and early returns). Files and services are named once, in `src/s1cr/stores.py`;
+data is named by dataclasses and TypedDicts whose fields say what they hold. The comment shows a map of
+every command with what it reads, calls and writes, marks what the pull request changed, and lists 🟡
+whatever new or edited code leaves unnamed:
+
+```sh
+uv run python -m scripts.flow                  # the whole app: map, files and services, steps, data
+uv run python -m scripts.flow --changed main   # what this branch changes in it
+```
+
+A decision is what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` and
+`scripts/` carries a comment that reads as its condition in plain words, so the list reads like prose:
 
 ```sh
 uv run python -m scripts.decisions src/s1cr/github.py   # one file, top to bottom

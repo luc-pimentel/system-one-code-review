@@ -12,10 +12,13 @@ from pathlib import Path
 
 import numpy as np
 
-from . import jev, metrics, provenance, questions
+from . import jev, metrics, provenance, questions, stores
+from .models import Attempt, ChoiceKey, NoulKey
 from .swrbench import CATEGORIES, SOURCE_COMMIT, SOURCE_REPO, Row
 
 PRICE_PER_MILLION_INPUT = 0.042  # USD, TypeSafe's quoted price for Jev input tokens
+NOUL_KEYS: tuple[NoulKey, ...] = ("changes_requested", "functional_defect")
+CHOICE_KEYS: tuple[ChoiceKey, ...] = ("problem_type", "fault_file")
 
 
 @dataclass
@@ -149,7 +152,8 @@ class Results:
     cost: Cost
 
 
-def noul(answer: dict, key: str) -> float:
+def noul(answer: Attempt, key: NoulKey) -> float:
+    """Jev's probability of yes for one yes/no question."""
     return float(answer["answers"][key]["noul"])
 
 
@@ -170,7 +174,8 @@ def file_cases(rows: list[Row]) -> list[Row]:
     return [row for row in rows if row.changes_requested and len(row.files) > 1 and row.fault_files]
 
 
-def file_correct(row: Row, answer: dict) -> bool:
+def file_correct(row: Row, answer: Attempt) -> bool:
+    """Whether Jev's most likely file holds a problem the reviewers found."""
     options = {f"f{i}": file.path for i, file in enumerate(row.files)}
     choice = answer["answers"]["fault_file"]["choice"]
     if choice not in options:  # Jev picked a file that is not in the pull request
@@ -178,7 +183,7 @@ def file_correct(row: Row, answer: dict) -> bool:
     return options[choice] in row.fault_files
 
 
-def problem_type(rows: list[Row], answers: dict[str, dict]) -> Choice:
+def problem_type(rows: list[Row], answers: dict[str, Attempt]) -> Choice:
     """For pull requests with exactly one problem: is Jev's most likely kind of change that problem's?"""
     single = category_cases(rows)
     truth = [r.categories[0].replace(".", "") for r in single]
@@ -209,7 +214,7 @@ def problem_type(rows: list[Row], answers: dict[str, dict]) -> Choice:
     )
 
 
-def fault_file(rows: list[Row], answers: dict[str, dict]) -> Choice:
+def fault_file(rows: list[Row], answers: dict[str, Attempt]) -> Choice:
     """For pull requests reviewers asked to change that touch several files, with the problem's file known:
     does Jev's most likely file hold a problem?"""
     cases = file_cases(rows)
@@ -235,7 +240,8 @@ def fault_file(rows: list[Row], answers: dict[str, dict]) -> Choice:
     )
 
 
-def stability(rows: list[Row], runs: dict[str, dict[str, dict]]) -> Stability | None:
+def stability(rows: list[Row], runs: dict[str, dict[str, Attempt]]) -> Stability | None:
+    """How much the answers move between runs of the same pull requests; None with fewer than two runs."""
     if len(runs) < 2:  # only one run: nothing to compare
         return None
     names = sorted(runs)
@@ -243,41 +249,46 @@ def stability(rows: list[Row], runs: dict[str, dict[str, dict]]) -> Stability | 
     if not ids:  # no pull request was answered in every run
         return None
     out = Stability(names, len(ids), {}, {}, {}, {})
-    for key in ("changes_requested", "functional_defect"):
+    for key in NOUL_KEYS:
         values = np.array([[noul(runs[name][i], key) for name in names] for i in ids])
         pairs = [abs(values[:, a] - values[:, b]) for a, b in combinations(range(len(names)), 2)]
         out.mean_change[key] = float(np.mean(pairs))
         out.spread_95[key] = float(np.percentile(values.max(axis=1) - values.min(axis=1), 95))
         answers = values >= 0.5
         out.flips[key] = float(np.mean(answers.any(axis=1) & ~answers.all(axis=1)))
-    for key in ("problem_type", "fault_file"):
-        asked = [i for i in ids if key in runs[names[0]][i]["answers"]]
-        same = [len({runs[name][i]["answers"][key]["choice"] for name in names}) == 1 for i in asked]
-        out.agreement[key] = float(np.mean(same))
+    for question in CHOICE_KEYS:
+        asked = [i for i in ids if question in runs[names[0]][i]["answers"]]
+        same = [len({runs[name][i]["answers"][question]["choice"] for name in names}) == 1 for i in asked]
+        out.agreement[question] = float(np.mean(same))
     return out
 
 
-def cost(answers: dict[str, dict]) -> Cost:
+def cost(answers: dict[str, Attempt]) -> Cost:
+    """What one run's answered calls used: tokens, time and models."""
     results = list(answers.values())
-    inputs = [r["usage"]["input_tokens"] for r in results]
+    usage = [u for r in results if (u := r.get("usage")) is not None]
+    if len(usage) != len(results):  # an answered call has no token usage
+        raise ValueError("an answered call has no token usage; ask it again")
+    inputs = [u["input_tokens"] for u in usage]
     ms = [r["ms"] for r in results]
     return Cost(
         calls=len(results),
         input_tokens=sum(inputs),
-        output_tokens=sum(r["usage"]["output_tokens"] for r in results),
+        output_tokens=sum(u["output_tokens"] for u in usage),
         median_input=float(statistics.median(inputs)),
         ms_median=float(statistics.median(ms)),
         ms_90=float(np.percentile(ms, 90)),
-        models=dict(Counter(r["model"] for r in results)),
+        models=dict(Counter(r["model"] or "unknown" for r in results)),
     )
 
 
 def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
+    """Every number in the report, from the primary run's answers and the reviewers' labels."""
     runs = {path.parent.name: jev.load(path) for path in sorted(runs_dir.glob("*/answers.jsonl"))}
     if primary not in runs:  # the primary run does not exist
         raise FileNotFoundError(f"no run named {primary} in {runs_dir}")
     receipts = {
-        name: provenance.read(runs_dir / name) for name in runs if (runs_dir / name / "run.json").exists()
+        name: provenance.read(runs_dir / name) for name in runs if stores.receipt(runs_dir / name).exists()
     }
     if primary in receipts:  # the primary run is recorded with a Git receipt
         receipt = receipts[primary]
@@ -294,7 +305,7 @@ def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
     else:
         # Historical runs have no Git receipt. Keep them together only when their
         # recorded model/question signatures match, and never mix in new runs.
-        def signature(answers: dict) -> set[tuple]:
+        def signature(answers: dict[str, Attempt]) -> set[tuple[str | None, str | None]]:
             return {(answer.get("model"), answer.get("questions")) for answer in answers.values()}
 
         expected = signature(runs[primary])
@@ -305,7 +316,7 @@ def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
         }
     all_rows = [replace(row) for row in all_rows]
     answers = runs[primary]
-    refused = jev.refused(runs_dir / primary / "answers.jsonl")
+    refused = jev.refused(stores.answers(runs_dir / primary))
     for row in all_rows:
         if row.excluded is None and row.id in refused:  # Jev refused this pull request as too long
             row.excluded = "over Jev's token limit"
@@ -319,7 +330,7 @@ def score(all_rows: list[Row], runs_dir: Path, primary: str) -> Results:
     clean_or_functional = [r for r in rows if r.functional or not r.changes_requested]
     return Results(
         source=f"{SOURCE_REPO}@{SOURCE_COMMIT[:7]}",
-        model=Counter(a["model"] for a in answers.values()).most_common(1)[0][0],
+        model=Counter(a["model"] for a in answers.values()).most_common(1)[0][0] or "unknown",
         primary=primary,
         total=len(all_rows),
         kept=len(rows),

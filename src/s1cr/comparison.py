@@ -2,22 +2,73 @@
 
 import math
 import statistics
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 
 from . import metrics, provenance
+from .models import Attempt, NoulKey, UsageKey
 from .score import PRICE_PER_MILLION_INPUT, category_cases, file_cases, file_correct, noul
 from .swrbench import Row
 
+type Statistic = Callable[[list[Row], dict[str, Attempt]], float]
+type Scorer = Callable[[np.ndarray, np.ndarray], float]
 
-def load_run(path: Path) -> tuple[dict, dict[str, dict]]:
+
+class RunSummary(TypedDict):
+    """One recorded run, as the comparison reports it."""
+
+    path: str  # the run directory
+    git_commit: str  # the s1cr commit that ran
+    model: str  # the pinned Jev version
+    workers: int  # how many calls ran at once
+    completed: int  # pull requests answered
+    failed: int  # pull requests whose last call failed
+    pending: int  # eligible pull requests not asked yet
+
+
+class Metric(TypedDict):
+    """One metric for both runs, on the pull requests both answered."""
+
+    n: int  # the pull requests the metric used
+    baseline: float | None  # the baseline's value; None when undefined
+    candidate: float | None  # the candidate's value; None when undefined
+    delta: float | None  # candidate minus baseline; None when either is undefined
+
+
+class Cases(TypedDict):
+    """Which benchmark pull requests the comparison used."""
+
+    selected: int  # pull requests both runs selected
+    eligible: int  # the selected ones that were not left out
+    excluded: int  # the selected ones that were left out
+    matched: int  # pull requests both runs answered
+    matched_ids: list[str]  # their ids
+    baseline_only: list[str]  # pull requests only the baseline answered
+    candidate_only: list[str]  # pull requests only the candidate answered
+
+
+class Comparison(TypedDict):
+    """Two recorded runs measured by one evaluator on the pull requests both answered."""
+
+    baseline: RunSummary  # the baseline run
+    candidate: RunSummary  # the candidate run
+    evaluator: provenance.Snapshot  # the checkout that computed the metrics
+    cases: Cases  # which pull requests the metrics used
+    metrics: dict[str, Metric]  # each metric by name
+    input_price_per_million_usd: float  # the price input tokens are costed at
+
+
+def load_run(path: Path) -> tuple[RunSummary, dict[str, Attempt]]:
+    """One recorded run's summary, and its answered attempts by pull request id."""
     receipt = provenance.read(path)
     entries = provenance.records(path, receipt)
     answered = {entry["id"]: entry for entry in entries if "answers" in entry}
     failed = {entry["id"] for entry in entries if "error" in entry} - answered.keys()
-    summary = {
+    summary: RunSummary = {
         "path": str(path),
         "git_commit": receipt["git_commit"],
         "model": receipt["model"],
@@ -29,7 +80,8 @@ def load_run(path: Path) -> tuple[dict, dict[str, dict]]:
     return summary, answered
 
 
-def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dict:
+def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> Comparison:
+    """Measure two recorded runs with this evaluator, on the pull requests both answered."""
     baseline_receipt, candidate_receipt = provenance.read(baseline_dir), provenance.read(candidate_dir)
     # the runs used different inputs, labels or cases
     if (
@@ -44,9 +96,9 @@ def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dic
     candidate, right = load_run(candidate_dir)
     # Canonical order also makes tied-score metrics independent of answer arrival order.
     rows = sorted((row for row in selected if row.id in left and row.id in right), key=lambda row: row.id)
-    results = {}
+    results: dict[str, Metric] = {}
 
-    def measure(name, cases, statistic):
+    def measure(name: str, cases: list[Row], statistic: Statistic) -> None:
         values = [float(statistic(cases, answers)) for answers in (left, right)] if cases else [math.nan] * 2
         a, b = [value if math.isfinite(value) else None for value in values]
         results[name] = {
@@ -56,14 +108,20 @@ def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dic
             "delta": b - a if a is not None and b is not None else None,
         }
 
-    def binary(cases, answers, key, truth, statistic):
+    def binary(
+        cases: list[Row],
+        answers: dict[str, Attempt],
+        key: NoulKey,
+        truth: Callable[[Row], bool],
+        statistic: Scorer,
+    ) -> float:
         values = np.array([noul(answers[row.id], key) for row in cases])
         # a probability is outside 0 to 1
         if not np.all(np.isfinite(values) & (values >= 0) & (values <= 1)):
             raise ValueError(f"invalid probability in {key} answers")
         return statistic(np.array([truth(row) for row in cases]), values)
 
-    for name, key, truth, statistic in (
+    checks: list[tuple[str, NoulKey, Callable[[Row], bool], Scorer]] = [
         ("functional_auroc", "functional_defect", lambda row: row.functional, metrics.auroc),
         (
             "functional_accuracy",
@@ -73,30 +131,34 @@ def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dic
         ),
         ("functional_brier", "functional_defect", lambda row: row.functional, metrics.brier),
         ("changes_auroc", "changes_requested", lambda row: row.changes_requested, metrics.auroc),
-    ):
+    ]
+    for name, key, truth, statistic in checks:
         measure(name, rows, partial(binary, key=key, truth=truth, statistic=statistic))
     measure(
         "category_accuracy",
         category_cases(rows),
-        lambda cases, answers: np.mean(
-            [
-                answers[row.id]["answers"]["problem_type"]["choice"] == row.categories[0].replace(".", "")
-                for row in cases
-            ]
+        lambda cases, answers: float(
+            np.mean(
+                [
+                    answers[row.id]["answers"]["problem_type"]["choice"] == row.categories[0].replace(".", "")
+                    for row in cases
+                ]
+            )
         ),
     )
     measure(
         "file_accuracy",
         file_cases(rows),
-        lambda cases, answers: np.mean([file_correct(row, answers[row.id]) for row in cases]),
+        lambda cases, answers: float(np.mean([file_correct(row, answers[row.id]) for row in cases])),
     )
     measure(
         "median_ms", rows, lambda cases, answers: statistics.median(answers[row.id]["ms"] for row in cases)
     )
 
-    def tokens(cases, answers, key):
-        values = [(answers[row.id].get("usage") or {}).get(key) for row in cases]
-        return sum(values) if all(isinstance(value, int) and value >= 0 for value in values) else math.nan
+    def tokens(cases: list[Row], answers: dict[str, Attempt], key: UsageKey) -> float:
+        usage = [answers[row.id].get("usage") for row in cases]
+        values = [u[key] for u in usage if u is not None and isinstance(u.get(key), int) and u[key] >= 0]
+        return sum(values) if len(values) == len(cases) else math.nan
 
     measure("input_tokens", rows, lambda cases, answers: tokens(cases, answers, "input_tokens"))
     measure("output_tokens", rows, lambda cases, answers: tokens(cases, answers, "output_tokens"))
@@ -123,7 +185,8 @@ def compare(all_rows: list[Row], baseline_dir: Path, candidate_dir: Path) -> dic
     }
 
 
-def readable(result: dict) -> str:
+def readable(result: Comparison) -> str:
+    """The comparison as text for the terminal: who ran, what was matched, and a table of metrics."""
     left, right, cases = result["baseline"], result["candidate"], result["cases"]
     evaluator = result["evaluator"]
     lines = [
@@ -151,7 +214,7 @@ def readable(result: dict) -> str:
         "estimated_input_usd": "Estimated input cost (USD) ↓",
     }
 
-    def fmt(value, decimals, delta=False):
+    def fmt(value: float | None, decimals: int, delta: bool = False) -> str:
         return "n/a" if value is None else format(value, f"{'+' if delta else ''}.{decimals}f")
 
     for key, metric in result["metrics"].items():

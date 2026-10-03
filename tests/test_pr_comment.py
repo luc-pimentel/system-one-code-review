@@ -9,7 +9,7 @@ ENV = {
     "GITHUB_SERVER_URL": "https://github.com",
     "GITHUB_RUN_ID": "7",
     "HEAD_SHA": "c738d3a" + "0" * 33,
-    "STEP_RESULTS": "ruff=success format=success tests=success",
+    "STEP_RESULTS": "ruff=success format=success types=success tests=success",
 }
 LIMITS = {"complexity": 10, "decisions": 9, "branches": 12, "statements": 50}
 PREVIOUS = (
@@ -23,9 +23,11 @@ def checks(
     ruff="All checks passed!\n",
     fmt="22 files already formatted\n",
     tests="81 passed in 0.87s\n",
+    types="Success: no issues found in 18 source files\n",
 ):
     (tmp_path / "ruff.txt").write_text(ruff)
     (tmp_path / "format.txt").write_text(fmt)
+    (tmp_path / "mypy.txt").write_text(types)
     (tmp_path / "pytest.txt").write_text(tests)
     return tmp_path
 
@@ -44,7 +46,9 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
     )
     assert "| ruff check | ⚪ pass | 0 findings |" in body
     assert "| ruff format | ⚪ pass | 22 files already formatted |" in body
+    assert "| mypy | ⚪ pass | Success: no issues found in 18 source files |" in body
     assert "| pytest | ⚪ pass | 81 passed in 0.87s |" in body
+    assert "| names | ⚫ not run | |" in body
     assert "| decisions | 🟡 watch | highest 7 of 9 (`github.pull_request`) |" in body
     assert "**Functions this PR touched**, by entry point" in body
     assert "No function changed." in body
@@ -53,7 +57,7 @@ def test_body_summarises_the_checks_and_carries_the_marker(tmp_path):
 
 
 def test_failures_count_findings_and_compare_with_the_previous_run(tmp_path):
-    env = {**ENV, "STEP_RESULTS": "ruff=failure format=success tests=failure"}
+    env = {**ENV, "STEP_RESULTS": "ruff=failure format=success types=success tests=failure"}
     ruff = "src/a.py:1:1: F401 unused\nsrc/a.py:2:1: E501 long\nFound 2 errors.\n"
     tests = "FAILED tests/test_a.py::t - boom\n1 failed, 80 passed in 0.90s\n"
     body = pr_comment.render(
@@ -70,10 +74,11 @@ def test_failures_count_findings_and_compare_with_the_previous_run(tmp_path):
 
 
 def test_steps_that_did_not_run_are_shown_as_such(tmp_path):
-    env = {**ENV, "STEP_RESULTS": "ruff=skipped format=skipped tests=skipped"}
+    env = {**ENV, "STEP_RESULTS": "ruff=skipped format=skipped types=skipped tests=skipped"}
     body = pr_comment.render(env, tmp_path, None, changed="x", top=None, limits=LIMITS)
     assert body.startswith("🔴 **Checks:** fail. 0 ruff findings, no test result on `c738d3a`")
     assert "| ruff check | ⚫ not run | 0 findings |" in body
+    assert "| mypy | ⚫ not run |  |" in body
     assert "| decisions | ⚫ not run | |" in body
 
 
@@ -135,3 +140,37 @@ def test_the_list_folds_once_more_around_the_entry_points_and_a_huge_one_is_cut(
     cut = pr_comment.cap("\n\n".join([block] * 6), limit=len(block) * 3)
     assert cut.count("**`m.f`**") < 6
     assert "… cut here; the job summary has the full list." in cut
+
+
+def test_a_type_error_fails_the_verdict(tmp_path):
+    env = {**ENV, "STEP_RESULTS": "ruff=success format=success types=failure tests=success"}
+    found = "src/a.py:3: error: Incompatible types\nFound 1 error in 1 file (checked 18 source files)\n"
+    body = pr_comment.render(env, checks(tmp_path, types=found), None, changed="x", top=None, limits=LIMITS)
+    assert body.startswith("🔴 **Checks:** fail.")
+    assert "| mypy | 🔴 fail | Found 1 error in 1 file (checked 18 source files) |" in body
+
+
+def test_the_app_section_sits_between_the_checks_and_the_functions(tmp_path):
+    shown = "### How `app` works, and what this branch changes\n\n| | command |"
+    body = pr_comment.render(
+        ENV, checks(tmp_path), None, changed="x", top=None, limits=LIMITS, flow=shown, gaps=2
+    )
+    assert "| names | 🟡 watch | 2 things new or edited code leaves unnamed |" in body
+    assert body.index("| names |") < body.index("### How `app` works") < body.index("**Functions this PR")
+    clean = pr_comment.render(ENV, checks(tmp_path), None, changed="x", top=None, limits=LIMITS, gaps=0)
+    assert "| names | ⚪ pass | new and edited code names its data, files and services |" in clean
+
+
+def test_the_comment_is_cut_to_fit_but_the_summary_keeps_everything(tmp_path):
+    block = "⚪ **`m.f`** — 2 of 9 decisions\n- **if** x → ↩ returns `1`  L2"
+    changed = "<details><summary>app</summary>\n\n" + "\n\n".join([block] * 400) + "\n\n</details>"
+    whole = pr_comment.render(
+        ENV, checks(tmp_path), None, changed=changed, top=None, limits=LIMITS, limit=None
+    )
+    cut = pr_comment.render(
+        ENV, checks(tmp_path), None, changed=changed, top=None, limits=LIMITS, limit=5_000
+    )
+    assert whole.count("**`m.f`**") == 400
+    assert cut.count("**`m.f`**") < 400
+    assert "… cut here; the job summary has the full list." in cut
+    assert cut.count("<details") == cut.count("</details>")

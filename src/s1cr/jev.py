@@ -14,23 +14,30 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from . import questions
-from .models import MAX_STATE_CHARS, ReviewConfig, ReviewInput, ReviewResult
+from . import questions, stores
+from .models import (
+    MAX_STATE_CHARS,
+    Attempt,
+    JevRequest,
+    JevResponse,
+    ReviewConfig,
+    ReviewInput,
+    ReviewResult,
+)
 
 if TYPE_CHECKING:
     from .swrbench import Row
-
-API_URL = "https://api.typesafe.ai/v1/systemone"
 
 
 class JevError(Exception):
     pass
 
 
-def call(client: httpx.Client, request: dict, api_key: str, attempts: int = 3) -> dict:
+def call(client: httpx.Client, request: JevRequest, api_key: str, attempts: int = 3) -> JevResponse:
+    """One Jev call, retried on rate limits and server errors."""
     error = "no attempt made"
     for attempt in range(attempts):
-        response = client.post(API_URL, json=request, headers={"Authorization": f"Bearer {api_key}"})
+        response = client.post(stores.JEV, json=request, headers={"Authorization": f"Bearer {api_key}"})
         if response.status_code == 200:  # Jev answered
             return response.json()
         error = f"Jev HTTP {response.status_code}: {response.text[:300]}"
@@ -84,19 +91,20 @@ def done(output: Path) -> set[str]:
     return {line["id"] for line in lines if "answers" in line}
 
 
-def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int = 4) -> tuple[int, int]:
-    """Ask every row's questions once, appending one JSON line per answer to `output`. A rerun picks up
-    where the last one stopped. Returns how many calls succeeded and failed."""
+def run(rows: list["Row"], run_dir: Path, model: str, api_key: str, workers: int = 4) -> tuple[int, int]:
+    """Ask every row's questions once, appending one Attempt per answer to the run's answers. A rerun
+    picks up where the last one stopped. Returns how many calls succeeded and failed."""
     from .provenance import prepare
 
-    prepare(output.parent, rows, model, workers)
+    prepare(run_dir, rows, model, workers)
+    output = stores.answers(run_dir)
     completed = done(output)
     todo = [row for row in rows if row.excluded is None and row.id not in completed]
     lock = threading.Lock()
     ok = failed = 0
     config = ReviewConfig(model=model)
 
-    def ask(client: httpx.Client, row: "Row") -> dict:
+    def ask(client: httpx.Client, row: "Row") -> Attempt:
         try:
             result = review(row.review_input(), config, api_key=api_key, client=client)
             if result.model != model:  # Jev answered with a different model than requested
@@ -109,7 +117,14 @@ def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int 
                 }
         except (JevError, httpx.HTTPError, ValueError) as error:  # the call failed or was refused
             return {"id": row.id, "error": str(error)}
-        return {"id": row.id, **result.to_dict()}
+        return {
+            "id": row.id,
+            "questions": result.questions,
+            "model": result.model,
+            "answers": result.answers,
+            "usage": result.usage,
+            "ms": result.ms,
+        }
 
     with httpx.Client(timeout=120) as client, ThreadPoolExecutor(workers) as pool:
         for future in as_completed(pool.submit(ask, client, row) for row in todo):
@@ -125,9 +140,9 @@ def run(rows: list["Row"], output: Path, model: str, api_key: str, workers: int 
     return ok, failed
 
 
-def load(output: Path) -> dict[str, dict]:
+def load(output: Path) -> dict[str, Attempt]:
     """The answered calls of one run, by pull request id; later lines win over earlier ones."""
-    answered: dict[str, dict] = {}
+    answered: dict[str, Attempt] = {}
     for line in output.read_text().splitlines():
         if line:  # the line is not blank
             result = json.loads(line)
@@ -139,7 +154,7 @@ def load(output: Path) -> dict[str, dict]:
 def refused(output: Path) -> set[str]:
     """Pull requests Jev would not take because they are over its token limit, which the character count
     in `swrbench.MAX_STATE_CHARS` only approximates."""
-    latest: dict[str, dict] = {}
+    latest: dict[str, Attempt] = {}
     for line in output.read_text().splitlines():
         if line:  # the line is not blank
             result = json.loads(line)
