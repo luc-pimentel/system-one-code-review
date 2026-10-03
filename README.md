@@ -7,6 +7,244 @@ probabilities instead of writing text: TypeSafe's Jev is the first one measured 
 The results are in [`reports/jev-swrbench.md`](reports/jev-swrbench.md). The same reviewer can assess a live
 GitHub pull request from the command line.
 
+## How the data moves
+
+`fetch`, `build`, `run` and then `score` or `compare` make the benchmark, each reading what the one before it
+wrote; `review` assesses one live pull request. `run` and `review` ask Jev the same way. Cylinders are files
+`s1cr` keeps, with the data type each holds; hexagons are services it calls.
+
+Each command's lineage below follows its data from one type to the next: an arrow is the function that
+turns one into the other, a dotted arrow is data taken out of, or kept inside, the type that holds it. Both
+are read from the code by `scripts/flow.py`; `uv run python -m scripts.flow --readme` redraws them, and a
+test fails when they are out of date.
+
+<!-- flow -->
+```mermaid
+flowchart TD
+  c_fetch["s1cr fetch"]
+  s_github_raw{{"github raw"}}
+  f_source[("data/swrbench/swr_datasets_d5c5.jsonl")]
+  c_build["s1cr build"]
+  f_rows[("data/rows.jsonl<br/><i>Row</i>")]
+  s_gh{{"gh"}}
+  f_compare_cache[("data/compare")]
+  s_github_api{{"github api"}}
+  c_run["s1cr run"]
+  f_answers[("#lt;run#gt;/answers.jsonl<br/><i>Attempt</i>")]
+  f_receipt[("#lt;run#gt;/run.json<br/><i>Receipt</i>")]
+  s_git{{"git"}}
+  s_jev{{"jev"}}
+  c_score["s1cr score"]
+  f_report[("reports/jev-swrbench.md")]
+  c_compare["s1cr compare"]
+  t_out(["terminal"])
+  c_review["s1cr review"]
+  s_github_raw -.- c_fetch
+  c_fetch <--> f_source
+  c_build --> f_rows
+  s_github_raw -.- c_build
+  f_source <--> c_build
+  s_gh -.- c_build
+  c_build <--> f_compare_cache
+  s_github_api -.- c_build
+  f_rows --> c_run
+  c_run <--> f_answers
+  c_run <--> f_receipt
+  s_git -.- c_run
+  s_jev -.- c_run
+  f_rows --> c_score
+  f_answers --> c_score
+  f_receipt --> c_score
+  c_score --> f_report
+  f_rows --> c_compare
+  f_receipt --> c_compare
+  f_answers --> c_compare
+  s_git -.- c_compare
+  c_compare --> t_out
+  s_gh -.- c_review
+  s_jev -.- c_review
+  c_review --> t_out
+```
+
+<details><summary><b><code>s1cr fetch</code></b> — download SWR-Bench at the pinned commit into data/</summary>
+
+```mermaid
+flowchart TD
+  s_github_raw{{"github raw"}}
+  f_source[("data/swrbench/swr_datasets_d5c5.jsonl")]
+  s_github_raw -->|"download"| f_source
+```
+
+🟡 Unnamed here, so drawn without it: `swrbench.load: list[dict]`
+
+</details>
+
+<details><summary><b><code>s1cr build</code></b> — turn SWR-Bench into rows a model reads, into data/rows.jsonl</summary>
+
+```mermaid
+flowchart TD
+  t_Row("Row")
+  f_rows[("data/rows.jsonl<br/><i>Row</i>")]
+  s_github_raw{{"github raw"}}
+  f_source[("data/swrbench/swr_datasets_d5c5.jsonl")]
+  s_github_api{{"github api"}}
+  t_FileDiff("FileDiff")
+  f_compare_cache[("data/compare")]
+  t_Row -->|"build"| f_rows
+  s_github_raw -->|"download"| f_source
+  f_compare_cache -->|"Comparer"| t_FileDiff
+  s_github_api -->|"Comparer"| f_compare_cache
+  t_FileDiff -->|"to_row"| t_Row
+```
+
+🟡 Unnamed here, so drawn without it: `swrbench.load: list[dict]`, `swrbench.to_row: dict`, `swrbench.commit_files: dict`, `swrbench.fault_files: dict`
+
+</details>
+
+<details><summary><b><code>s1cr run</code></b> — ask Jev every row's questions, into runs/&lt;name&gt;/answers.jsonl</summary>
+
+```mermaid
+flowchart TD
+  f_rows[("data/rows.jsonl<br/><i>Row</i>")]
+  t_Row("Row")
+  t_Attempt("Attempt")
+  t_ReviewResult("ReviewResult")
+  t_ReviewInput("ReviewInput")
+  f_answers[("#lt;run#gt;/answers.jsonl<br/><i>Attempt</i>")]
+  t_Receipt("Receipt")
+  t_Snapshot("Snapshot")
+  f_receipt[("#lt;run#gt;/run.json<br/><i>Receipt</i>")]
+  s_git{{"git"}}
+  t_JevResponse("JevResponse")
+  t_JevRequest("JevRequest")
+  t_ReviewConfig("ReviewConfig")
+  t_State("State")
+  t_Question("Question")
+  s_jev{{"jev"}}
+  f_rows -->|"load_rows"| t_Row
+  t_ReviewResult -->|"ask"| t_Attempt
+  t_Attempt -->|"run"| f_answers
+  t_Row -->|"prepare"| t_Receipt
+  t_Snapshot -->|"prepare"| t_Receipt
+  t_Receipt -->|"prepare"| f_receipt
+  s_git -->|"git_snapshot"| t_Snapshot
+  f_receipt -->|"read"| t_Receipt
+  f_answers -->|"records, done"| t_Attempt
+  t_Row -->|"review_input"| t_ReviewInput
+  t_JevResponse -->|"review"| t_ReviewResult
+  t_ReviewConfig -->|"review"| t_ReviewResult
+  t_State -->|"request"| t_JevRequest
+  t_Question -->|"request"| t_JevRequest
+  t_ReviewInput -->|"state"| t_State
+  t_ReviewInput -->|"questions, fault_file"| t_Question
+  t_JevRequest -->|"call"| s_jev
+  s_jev -->|"call"| t_JevResponse
+```
+
+</details>
+
+<details><summary><b><code>s1cr score</code></b> — score every run and write reports/jev-swrbench.md</summary>
+
+```mermaid
+flowchart TD
+  f_rows[("data/rows.jsonl<br/><i>Row</i>")]
+  t_Row("Row")
+  t_Binary("Binary")
+  t_Results("Results")
+  t_Choice("Choice")
+  t_Stability("Stability")
+  t_Cost("Cost")
+  t_Attempt("Attempt")
+  t_Receipt("Receipt")
+  f_answers[("#lt;run#gt;/answers.jsonl<br/><i>Attempt</i>")]
+  f_receipt[("#lt;run#gt;/run.json<br/><i>Receipt</i>")]
+  f_report[("reports/jev-swrbench.md")]
+  f_rows -->|"load_rows"| t_Row
+  t_Binary -->|"score"| t_Results
+  t_Choice -->|"score"| t_Results
+  t_Stability -->|"score"| t_Results
+  t_Cost -->|"score"| t_Results
+  f_answers -->|"load, records, refused"| t_Attempt
+  f_receipt -->|"read"| t_Receipt
+  t_Receipt -->|"select_rows"| t_Row
+  t_Row -->|"binary"| t_Binary
+  t_Row -->|"problem_type, fault_file"| t_Choice
+  t_Attempt -->|"problem_type, fault_file"| t_Choice
+  t_Attempt -->|"stability"| t_Stability
+  t_Row -->|"stability"| t_Stability
+  t_Attempt -->|"cost"| t_Cost
+  t_Results -->|"write_report"| f_report
+```
+
+</details>
+
+<details><summary><b><code>s1cr compare</code></b> — compare two recorded runs on matched benchmark PRs</summary>
+
+```mermaid
+flowchart TD
+  f_rows[("data/rows.jsonl<br/><i>Row</i>")]
+  t_Row("Row")
+  t_Snapshot("Snapshot")
+  t_Comparison("Comparison")
+  t_Metric("Metric")
+  t_RunSummary("RunSummary")
+  t_Attempt("Attempt")
+  t_Receipt("Receipt")
+  f_receipt[("#lt;run#gt;/run.json<br/><i>Receipt</i>")]
+  f_answers[("#lt;run#gt;/answers.jsonl<br/><i>Attempt</i>")]
+  s_git{{"git"}}
+  f_rows -->|"load_rows"| t_Row
+  t_Snapshot -->|"compare"| t_Comparison
+  t_Metric -->|"compare"| t_Comparison
+  t_RunSummary -->|"compare"| t_Comparison
+  t_Attempt -->|"compare"| t_Comparison
+  t_Row -->|"compare"| t_Comparison
+  f_receipt -->|"read"| t_Receipt
+  t_Receipt -->|"select_rows"| t_Row
+  t_Receipt -->|"load_run"| t_RunSummary
+  t_Receipt -->|"load_run"| t_Attempt
+  f_answers -->|"records"| t_Attempt
+  s_git -->|"git_snapshot"| t_Snapshot
+```
+
+</details>
+
+<details><summary><b><code>s1cr review</code></b> — review the current diff of a GitHub pull request</summary>
+
+```mermaid
+flowchart TD
+  t_GitHubPull("GitHubPull")
+  t_PullRequest("PullRequest")
+  t_GitHubFile("GitHubFile")
+  s_gh{{"gh"}}
+  t_JevResponse("JevResponse")
+  t_ReviewResult("ReviewResult")
+  t_JevRequest("JevRequest")
+  t_ReviewInput("ReviewInput")
+  t_ReviewConfig("ReviewConfig")
+  t_State("State")
+  t_Question("Question")
+  s_jev{{"jev"}}
+  t_GitHubPull -->|"pull_request"| t_PullRequest
+  t_GitHubFile -->|"pull_request"| t_PullRequest
+  s_gh -->|"_api"| t_GitHubPull
+  s_gh -->|"_api"| t_GitHubFile
+  t_JevResponse -->|"review"| t_ReviewResult
+  t_ReviewConfig -->|"review"| t_ReviewResult
+  t_State -->|"request"| t_JevRequest
+  t_Question -->|"request"| t_JevRequest
+  t_ReviewInput -->|"state"| t_State
+  t_ReviewInput -->|"questions, fault_file"| t_Question
+  t_JevRequest -->|"call"| s_jev
+  s_jev -->|"call"| t_JevResponse
+  t_PullRequest -.->|".input"| t_ReviewInput
+```
+
+🟡 Unnamed here, so drawn without it: `presentation.document: dict`, `models.ReviewResult.to_dict: dict`
+
+</details>
+<!-- /flow -->
+
 ## Review a pull request
 
 Needs [uv](https://docs.astral.sh/uv/), a logged-in [GitHub CLI](https://cli.github.com/) (`gh auth login`),
@@ -68,16 +306,21 @@ Every pull request runs `ruff check`, `ruff format --check`, `mypy` and `pytest`
 The comment sums up the checks, shows what the pull request changes in what `s1cr` does, and lists the
 functions it touched, decision by decision.
 
-What `s1cr` does is read from the code itself. Each command is a chain of steps: the functions its
-handler reaches, each with the data it takes and gives, the files and services it touches, and the rules
-it keeps (its refusals and early returns). Files and services are named once, in `src/s1cr/stores.py`;
-data is named by dataclasses and TypedDicts whose fields say what they hold. The comment shows a map of
-every command with what it reads, calls and writes, marks what the pull request changed, and lists 🟡
-whatever new or edited code leaves unnamed:
+What `s1cr` does is read from the code itself. Each command reaches a set of functions; each function
+takes and gives data, touches files and services, and keeps rules (its refusals and early returns). Files
+and services are named once, in `src/s1cr/stores.py`, where a file's comment names the data type it holds;
+data is named by dataclasses and TypedDicts whose fields say what they hold.
+
+The comment opens with what the pull request changed, one line each: the map, the data types, each
+command's lineage, the rules, and the code, where a function whose docstrings or type annotations alone
+changed is counted apart from one whose code did. Below that come the map and the changed lineages as
+diagrams, with what is new, changed or removed outlined; the rules that came or went, each under the
+function that keeps it; the data types that changed; and 🟡 whatever new or edited code leaves unnamed:
 
 ```sh
-uv run python -m scripts.flow                  # the whole app: map, files and services, steps, data
+uv run python -m scripts.flow                  # the whole app: map, files and services, lineages, rules, data
 uv run python -m scripts.flow --changed main   # what this branch changes in it
+uv run python -m scripts.flow --readme         # redraw the map and lineages above
 ```
 
 A decision is what ruff's complexity rule counts: an `if`, a loop, an `except`. Each one in `src/` and
