@@ -141,12 +141,14 @@ def cap(text: str, limit: int) -> str:
     return kept + "\n\n… cut here; the job summary has the full list." + "\n\n</details>" * unclosed
 
 
-def fold(changed: str) -> str:
-    """The whole list behind one fold that names its size; each entry point folds again inside it."""
-    count = sum(line.startswith(("⚪", "🟡", "🔴", "−")) for line in changed.splitlines())
+def fold(changed: str, whole: str = "") -> str:
+    """The whole list behind one fold that names its size; each entry point folds again inside it.
+    When the list was cut to fit, `whole` is the uncut list its size is counted from."""
+    counted = whole or changed
+    count = sum(line.startswith(("⚪", "🟡", "🔴", "−")) for line in counted.splitlines())
     if not count:  # nothing changed: one line says so
         return changed
-    entry_points = changed.count("<details><summary>")
+    entry_points = counted.count("<details><summary>")
     summary = f"{count} function" + ("s" if count != 1 else "")
     if entry_points:  # the inner folds are entry points
         summary += f" in {entry_points} entry point" + ("s" if entry_points != 1 else "")
@@ -211,7 +213,7 @@ def render(
             "**Functions this PR touched**, by entry point, in the order it reaches them, "
             "each with its decisions as they are now",
             "",
-            fold(functions),
+            fold(functions, changed),
             "",
             decisions.LEGEND,
             f"Limits: {limits['decisions']} decisions per function (ruff mccabe {limits['complexity']}), "

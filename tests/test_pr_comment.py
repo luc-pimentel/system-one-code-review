@@ -172,5 +172,6 @@ def test_the_comment_is_cut_to_fit_but_the_summary_keeps_everything(tmp_path):
     )
     assert whole.count("**`m.f`**") == 400
     assert cut.count("**`m.f`**") < 400
+    assert "<summary>400 functions in 1 entry point</summary>" in cut  # the size of the whole list
     assert "… cut here; the job summary has the full list." in cut
     assert cut.count("<details") == cut.count("</details>")
