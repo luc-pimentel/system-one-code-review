@@ -17,6 +17,7 @@ from pathlib import Path
 
 import httpx
 
+from . import stores
 from .models import MAX_STATE_CHARS, ReviewInput
 from .models import FileDiff as FileDiff
 from .questions import CATEGORIES as CATEGORIES
@@ -71,7 +72,7 @@ class Row:
 
 def download(target: Path) -> Path:
     """Fetch the benchmark file at the pinned commit and check it is the one this code was built on."""
-    url = f"https://raw.githubusercontent.com/{SOURCE_REPO}/{SOURCE_COMMIT}/{SOURCE_PATH}"
+    url = f"{stores.GITHUB_RAW}/{SOURCE_REPO}/{SOURCE_COMMIT}/{SOURCE_PATH}"
     if not target.exists():  # the file was never downloaded
         target.parent.mkdir(parents=True, exist_ok=True)
         response = httpx.get(url, timeout=300, follow_redirects=True)

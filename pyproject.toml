@@ -23,6 +23,7 @@ module-name = "s1cr"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.0",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
@@ -38,7 +39,7 @@ select = [
     "C90", "PLR0912", "PLR0915",  # one function, one job: branches and statements stay bounded
 ]
 ignore = ["E501"]  # the formatter owns line length; long strings stay readable
-allowed-confusables = ["–", "−", "×"]  # typography in report text, not typos
+allowed-confusables = ["–", "−", "×", "➕", "➖"]  # typography in report and comment text, not typos
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
@@ -46,3 +47,12 @@ max-complexity = 10
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+files = ["src", "scripts"]
+python_version = "3.13"
+disallow_untyped_defs = true  # every function states the data it takes and returns
+check_untyped_defs = true
+strict_equality = true
+warn_unused_ignores = true
+warn_redundant_casts = true

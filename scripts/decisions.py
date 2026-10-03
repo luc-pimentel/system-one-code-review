@@ -17,6 +17,7 @@ import tomllib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 NEEDS_PHRASE = {"if", "or if", "while", "on error", "case"}
 NOT_PHRASES = ("noqa", "type:", "pragma", "fmt:", "ruff:")
@@ -101,15 +102,21 @@ class Source:
         return above[0] if above and above[1] else None
 
 
+def piece(src: Source, part: ast.expr) -> str:
+    """One part of an f-string: its words as written, a value as `{value}`."""
+    if isinstance(part, ast.Constant):  # words
+        return str(part.value)
+    if isinstance(part, ast.FormattedValue):  # a value the string fills in
+        return "{" + src.segment(part.value, 25) + "}"
+    return ""
+
+
 def message(src: Source, node: ast.expr) -> str | None:
     """The string an error is raised with: the author's own words for what went wrong."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):  # a plain string
         text = node.value
     elif isinstance(node, ast.JoinedStr):  # an f-string: keep the words, mark the values
-        text = "".join(
-            part.value if isinstance(part, ast.Constant) else "{" + src.segment(part.value, 25) + "}"
-            for part in node.values
-        )
+        text = "".join(piece(src, part) for part in node.values)
     else:
         return None
     text = " ".join(text.split())
@@ -158,7 +165,7 @@ class Walker:
     def __init__(self, src: Source) -> None:
         self.src = src
         self.out: list[Decision] = []
-        self.visit: dict[type, Callable[[ast.AST, int], None]] = {
+        self.visit: dict[type[ast.AST], Callable[[Any, int], None]] = {
             ast.If: self.branch,
             ast.For: self.loop,
             ast.AsyncFor: self.loop,
@@ -247,15 +254,24 @@ class Walker:
         self.walk(node.body, depth + 1)
 
 
-def named_functions(body: list[ast.stmt], prefix: str = "") -> list[tuple[ast.AST, str]]:
+type FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def named_functions(body: list[ast.stmt], prefix: str = "") -> list[tuple[FunctionNode, str]]:
     """Module-level functions and methods, with methods named after their class."""
-    found = []
+    found: list[tuple[FunctionNode, str]] = []
     for node in body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):  # a function or method
             found.append((node, prefix + node.name))
         elif isinstance(node, ast.ClassDef):  # a class: its methods are listed
             found.extend(named_functions(node.body, prefix + node.name + "."))
     return found
+
+
+def first_sentence(doc: str) -> str:
+    """A docstring's first sentence, however many lines it runs over."""
+    paragraph = " ".join(doc.split("\n\n", 1)[0].split())
+    return re.split(r"(?<=[.!?])\s", paragraph, maxsplit=1)[0]
 
 
 def functions(path: Path, text: str, *, nested: bool = False) -> list[Function]:
@@ -270,7 +286,7 @@ def functions(path: Path, text: str, *, nested: bool = False) -> list[Function]:
     for node, name in nodes:
         walker = Walker(src)
         walker.walk(node.body, 0)
-        doc = (ast.get_docstring(node) or "").split("\n")[0]
+        doc = first_sentence(ast.get_docstring(node) or "")
         found.append(
             Function(path, name, node.lineno, doc, walker.out, ast.get_source_segment(text, node) or "")
         )
@@ -376,27 +392,25 @@ def import_map(tree: ast.Module, known: set[str]) -> dict[str, tuple[str, str]]:
     return names
 
 
+def parser_assignment(sub: ast.AST) -> tuple[str, str] | None:
+    """The variable and the subcommand of `x = commands.add_parser("name", ...)`, when `sub` is one."""
+    if not isinstance(sub, ast.Assign) or len(sub.targets) != 1:  # not one assignment to one target
+        return None
+    target, call = sub.targets[0], sub.value
+    # not a plain variable given an `add_parser(...)` call
+    if not (
+        isinstance(target, ast.Name) and isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+    ):
+        return None
+    first = call.args[0] if call.args else None
+    if call.func.attr != "add_parser" or not isinstance(first, ast.Constant):  # not `add_parser("name", ...)`
+        return None
+    return target.id, str(first.value)
+
+
 def subcommand_parsers(node: ast.AST) -> dict[str, str]:
     """`x = commands.add_parser("name", ...)` assignments: the variable and the subcommand it parses."""
-    parsers = {}
-    for sub in ast.walk(node):
-        call = sub.value if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Call) else None
-        # not an `add_parser(...)` call being assigned
-        if (
-            not call
-            or not isinstance(call.func, ast.Attribute)
-            or call.func.attr != "add_parser"
-            or not call.args
-        ):
-            continue
-        # the subcommand is a literal and lands in one plain variable
-        if (
-            isinstance(call.args[0], ast.Constant)
-            and len(sub.targets) == 1
-            and isinstance(sub.targets[0], ast.Name)
-        ):
-            parsers[sub.targets[0].id] = call.args[0].value
-    return parsers
+    return dict(filter(None, (parser_assignment(sub) for sub in ast.walk(node))))
 
 
 def set_defaults_calls(node: ast.AST) -> list[ast.Call]:
@@ -415,7 +429,7 @@ class CallGraph:
     """Which functions refer to which, resolved through relative imports, in evaluation order."""
 
     def __init__(self, paths: list[Path]) -> None:
-        self.nodes: dict[str, ast.AST] = {}
+        self.nodes: dict[str, FunctionNode] = {}
         self.targets: dict[str, list[str]] = {}
         self.imports: dict[str, dict[str, tuple[str, str]]] = {}
         self.modules = [path.stem for path in paths if path.stem != "__init__"]
@@ -496,9 +510,12 @@ class CallGraph:
         if node is None:  # the entry is not in these files
             return []
         parsers = subcommand_parsers(node)
-        found = []
+        found: list[tuple[str, str]] = []
         for call in set_defaults_calls(node):
-            receiver = call.func.value.id if isinstance(call.func.value, ast.Name) else ""
+            func = call.func
+            receiver = (
+                func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else ""
+            )
             for keyword in call.keywords:
                 if keyword.arg == "func":  # the handler
                     found.extend(
@@ -645,7 +662,8 @@ def changed_report(
     base: str, paths: list[str], limit: int, link_base: str = "", *, fold: bool = False
 ) -> str:
     """The functions edited since `base`, each with its whole decision path, on the app's path."""
-    entries, removed = [], []
+    entries: list[Entry] = []
+    removed: list[str] = []
     for path in map(Path, git("diff", "--name-only", base, "--", *paths).splitlines()):
         if path.suffix != ".py":  # not Python
             continue

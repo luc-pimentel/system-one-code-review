@@ -11,18 +11,29 @@ import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypedDict
 
-from . import questions
+from . import questions, stores
+from .models import Attempt, Receipt
 from .swrbench import SOURCE_COMMIT, SOURCE_REPO, Row
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
 
-def git_snapshot(root: Path = SOURCE_ROOT) -> dict:
+class Snapshot(TypedDict):
+    """The checkout a command ran from."""
+
+    commit: str  # the commit HEAD points at
+    dirty: bool  # whether the source differs from that commit; runs, reports and data aside
+
+
+def git_snapshot(root: Path = SOURCE_ROOT) -> Snapshot:
+    """The commit the executed source belongs to, and whether it has uncommitted changes."""
+
     def git(*args: str) -> str:
         try:
             return subprocess.run(
-                ["git", "-C", str(root), *args], capture_output=True, text=True, check=True
+                [stores.GIT, "-C", str(root), *args], capture_output=True, text=True, check=True
             ).stdout.strip()
         except (
             FileNotFoundError,
@@ -57,28 +68,23 @@ def rows_hash(rows: list[Row]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def identity(receipt: dict) -> dict:
-    return {key: value for key, value in receipt.items() if key != "created_at"}
+def identity(receipt: Receipt) -> Receipt:
+    """The receipt without the time it was written: what two executions of one run share."""
+    same = receipt.copy()
+    same.pop("created_at", None)
+    return same
 
 
-def read(run_dir: Path) -> dict:
-    path = run_dir / "run.json"
+def read(run_dir: Path) -> Receipt:
+    """A run's receipt, checked for every field and for case IDs that make sense."""
+    path = stores.receipt(run_dir)
     if not path.exists():  # the run has no receipt
         raise ValueError(
             f"{run_dir} has no run.json; start a new recorded run (legacy runs still support score)"
         )
-    receipt = json.loads(path.read_text())
-    required = {
-        "git_commit",
-        "model",
-        "questions",
-        "workers",
-        "dataset",
-        "case_ids",
-        "eligible_ids",
-        "created_at",
-    }
-    if not isinstance(receipt, dict) or not required <= receipt.keys():  # the receipt lacks a required field
+    receipt: Receipt = json.loads(path.read_text())  # checked below, field by field
+    # the receipt lacks a field the Receipt type names
+    if not isinstance(receipt, dict) or not Receipt.__annotations__.keys() <= receipt.keys():
         raise ValueError(f"invalid run receipt: {path}")
     ids, eligible = receipt["case_ids"], receipt["eligible_ids"]
     # case IDs repeat, or an eligible ID is not a case
@@ -87,7 +93,8 @@ def read(run_dir: Path) -> dict:
     return receipt
 
 
-def select_rows(receipt: dict, all_rows: list[Row]) -> list[Row]:
+def select_rows(receipt: Receipt, all_rows: list[Row]) -> list[Row]:
+    """The benchmark rows a run used, in its order, refusing rows that differ from the recorded ones."""
     indexed = {row.id: row for row in all_rows}
     if len(indexed) != len(all_rows):  # two benchmark rows share an ID
         raise ValueError("benchmark rows contain duplicate IDs")
@@ -103,13 +110,13 @@ def select_rows(receipt: dict, all_rows: list[Row]) -> list[Row]:
     return rows
 
 
-def records(run_dir: Path, receipt: dict) -> list[dict]:
+def records(run_dir: Path, receipt: Receipt) -> list[Attempt]:
     """Validate all saved attempts before resuming or comparing a recorded run."""
-    path = run_dir / "answers.jsonl"
+    path = stores.answers(run_dir)
     if not path.exists():  # nothing was answered yet
         return []
     eligible = set(receipt["eligible_ids"])
-    entries = []
+    entries: list[Attempt] = []
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if not line:  # the line is blank
             continue
@@ -126,7 +133,7 @@ def records(run_dir: Path, receipt: dict) -> list[dict]:
     return entries
 
 
-def prepare(run_dir: Path, rows: list[Row], model: str, workers: int) -> dict:
+def prepare(run_dir: Path, rows: list[Row], model: str, workers: int) -> Receipt:
     """Create a receipt once, or require a matching receipt before appending answers."""
     if not re.fullmatch(r"jev-\d+\.\d+\.\d+", model):  # the model is not pinned to a version
         raise ValueError("benchmark runs require a pinned model, e.g. --model jev-1.13.0")
@@ -138,7 +145,7 @@ def prepare(run_dir: Path, rows: list[Row], model: str, workers: int) -> dict:
     snapshot = git_snapshot()
     if snapshot["dirty"]:  # the source has uncommitted changes
         raise ValueError("commit source changes before benchmarking, or use a clean Git worktree")
-    expected = {
+    expected: Receipt = {
         "git_commit": snapshot["commit"],
         "model": model,
         "questions": questions.VERSION,
@@ -147,17 +154,17 @@ def prepare(run_dir: Path, rows: list[Row], model: str, workers: int) -> dict:
         "case_ids": ids,
         "eligible_ids": [row.id for row in rows if row.excluded is None],
     }
-    path = run_dir / "run.json"
+    path = stores.receipt(run_dir)
     if path.exists():  # a receipt already exists -> reuse it
         saved = read(run_dir)
         if identity(saved) != expected:  # the saved receipt differs from this run's settings
             raise ValueError("run commit, model, inputs, or execution settings changed; use a new run name")
         records(run_dir, saved)
         return saved
-    answers = run_dir / "answers.jsonl"
+    answers = stores.answers(run_dir)
     if answers.exists() and answers.stat().st_size:  # answers were saved without a receipt
         raise ValueError(f"{run_dir} has answers without provenance; use a new run name")
-    receipt = {**expected, "created_at": datetime.now(UTC).isoformat()}
+    receipt: Receipt = {**expected, "created_at": datetime.now(UTC).isoformat()}
     run_dir.mkdir(parents=True, exist_ok=True)
     with path.open("x") as stream:
         stream.write(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")

@@ -7,25 +7,20 @@ from pathlib import Path
 
 import httpx
 
-from . import github, jev, swrbench
+from . import github, jev, stores, swrbench
 from .models import DEFAULT_MODEL, ReviewConfig
 from .presentation import document, readable
 
-DATA = Path("data")
-SOURCE = DATA / "swrbench" / "swr_datasets_d5c5.jsonl"
-COMPARE_CACHE = DATA / "compare"
-ROWS = DATA / "rows.jsonl"
-RUNS = Path("runs")
-REPORT = Path("reports/jev-swrbench.md")
 
-
-def load_rows(path: Path = ROWS) -> list[swrbench.Row]:
+def load_rows(path: Path = stores.ROWS) -> list[swrbench.Row]:
+    """The benchmark rows `s1cr build` wrote."""
     if not path.exists():  # the rows were never built
         raise FileNotFoundError(f"{path} is missing; run `s1cr build` first")
     return [swrbench.Row.from_json(line) for line in path.read_text().splitlines() if line]
 
 
 def api_key() -> str:
+    """The TypeSafe API key from the environment."""
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:  # no API key in the environment
         raise SystemExit("error: TYPESAFE_API_KEY is not set")
@@ -33,17 +28,19 @@ def api_key() -> str:
 
 
 def fetch(args: argparse.Namespace) -> None:
-    path = swrbench.download(SOURCE)
+    """Download SWR-Bench at its pinned commit."""
+    path = swrbench.download(stores.SOURCE)
     print(f"{path}: {len(swrbench.load(path))} pull requests")
 
 
 def build(args: argparse.Namespace) -> None:
-    records = swrbench.load(swrbench.download(SOURCE))
-    comparer = github.Comparer(COMPARE_CACHE, github.token())
+    """Turn every SWR-Bench record into a row a model reads, and say why the left-out ones are."""
+    records = swrbench.load(swrbench.download(stores.SOURCE))
+    comparer = github.Comparer(stores.COMPARE_CACHE, github.token())
     rows = [swrbench.to_row(record, comparer) for record in records]
-    ROWS.write_text("".join(row.to_json() + "\n" for row in rows))
+    stores.ROWS.write_text("".join(row.to_json() + "\n" for row in rows))
     kept = [r for r in rows if r.excluded is None]
-    print(f"{len(kept)} of {len(rows)} pull requests kept in {ROWS}")
+    print(f"{len(kept)} of {len(rows)} pull requests kept in {stores.ROWS}")
     reasons: dict[str, int] = {}
     for row in rows:
         if row.excluded:  # the row was left out of the benchmark
@@ -54,27 +51,31 @@ def build(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    """Ask Jev every row's questions, recording the run so it can be resumed and compared."""
+    run_dir = stores.RUNS / args.name
     try:
         if args.limit is not None and args.limit < 1:  # a limit below one row was asked for
             raise ValueError("limit must be at least 1")
         rows = load_rows()[: args.limit]
-        ok, failed = jev.run(rows, RUNS / args.name / "answers.jsonl", args.model, api_key(), args.workers)
+        ok, failed = jev.run(rows, run_dir, args.model, api_key(), args.workers)
     except (OSError, ValueError) as error:  # the rows or the run directory are unusable
         raise SystemExit(f"error: {error}") from error
-    print(f"{ok} answered, {failed} failed, in {RUNS / args.name}/answers.jsonl")
+    print(f"{ok} answered, {failed} failed, in {stores.answers(run_dir)}")
     if failed:  # some calls failed, so the run is incomplete
         raise SystemExit(1)
 
 
 def score(args: argparse.Namespace) -> None:
+    """Score every run against the reviewers' labels and write the report."""
     from .report import write_report
     from .score import score as score_runs
 
-    write_report(score_runs(load_rows(), RUNS, args.primary), REPORT)
-    print(f"wrote {REPORT}")
+    write_report(score_runs(load_rows(), stores.RUNS, args.primary), stores.REPORT)
+    print(f"wrote {stores.REPORT}")
 
 
 def review(args: argparse.Namespace) -> None:
+    """Assess one live GitHub pull request with Jev."""
     try:
         github.parse_pr_url(args.url)
         key = api_key()
@@ -91,12 +92,13 @@ def review(args: argparse.Namespace) -> None:
 
 
 def compare(args: argparse.Namespace) -> None:
+    """Compare two recorded runs on the pull requests both answered."""
     from .comparison import compare as compare_runs
     from .comparison import readable as readable_comparison
 
     def run_path(value: str) -> Path:
         path = Path(value)
-        return RUNS / path if len(path.parts) == 1 and not path.is_dir() else path
+        return stores.RUNS / path if len(path.parts) == 1 and not path.is_dir() else path
 
     try:
         result = compare_runs(load_rows(args.rows), run_path(args.baseline), run_path(args.candidate))
@@ -108,6 +110,7 @@ def compare(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Read the subcommand and hand its arguments to the function that runs it."""
     parser = argparse.ArgumentParser(prog="s1cr", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     fetch_cmd = commands.add_parser("fetch", help="download SWR-Bench at the pinned commit into data/")
@@ -128,7 +131,9 @@ def main(argv: list[str] | None = None) -> None:
     compare_cmd = commands.add_parser("compare", help="compare two recorded runs on matched benchmark PRs")
     compare_cmd.add_argument("baseline", help="run name or path to its directory, including another worktree")
     compare_cmd.add_argument("candidate", help="run name or path to its directory")
-    compare_cmd.add_argument("--rows", type=Path, default=ROWS, help="benchmark rows used by both runs")
+    compare_cmd.add_argument(
+        "--rows", type=Path, default=stores.ROWS, help="benchmark rows used by both runs"
+    )
     compare_cmd.add_argument(
         "--json", action="store_true", help="print comparison and cohort details as JSON"
     )

@@ -2,7 +2,7 @@
 
 from . import questions
 from .github import PullRequest
-from .models import ReviewResult
+from .models import ChoiceAnswer, ReviewResult
 
 
 def document(pr: PullRequest, result: ReviewResult) -> dict:
@@ -24,6 +24,7 @@ def document(pr: PullRequest, result: ReviewResult) -> dict:
 
 
 def readable(pr: PullRequest, result: ReviewResult) -> str:
+    """The assessment as text for the terminal: both probabilities, then the top options of each choice."""
     answers = result.answers
     category_names = {
         option: f"{code} {questions.CATEGORIES[code][0]}" for option, code in questions.OPTIONS.items()
@@ -41,7 +42,7 @@ def readable(pr: PullRequest, result: ReviewResult) -> str:
         "Category and file choices describe where a change would most likely be needed:",
     ]
 
-    def choice(label: str, answer: dict, names: dict[str, str]) -> None:
+    def choice(label: str, answer: ChoiceAnswer, names: dict[str, str]) -> None:
         lines.append(f"{label}: {names[answer['choice']]} (confidence {answer['confidence']:.1%})")
         ranked = sorted(answer["probabilities"].items(), key=lambda item: item[1], reverse=True)
         for option, probability in ranked[:3]:

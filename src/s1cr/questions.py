@@ -5,7 +5,7 @@ probability of yes), two are Choice questions (a probability for each option). T
 counts as yes, and describe each option; the category definitions are SWR-Bench's own.
 """
 
-from .models import ReviewInput
+from .models import JevRequest, Question, ReviewInput, State
 
 VERSION = "v1"
 MAX_DESCRIPTION_CHARS = 6000
@@ -72,7 +72,7 @@ CATEGORIES: dict[str, tuple[str, str]] = {
     ),
 }
 
-CHANGES_REQUESTED = {
+CHANGES_REQUESTED: Question = {
     "type": "noul",
     "instructions": (
         "Would a careful reviewer ask the author to change something in this pull request before merging it? "
@@ -87,7 +87,7 @@ CHANGES_REQUESTED = {
     },
 }
 
-FUNCTIONAL_DEFECT = {
+FUNCTIONAL_DEFECT: Question = {
     "type": "noul",
     "instructions": "Do the diffs in `files` introduce a functional defect: code that would behave incorrectly?",
     "criteria": {
@@ -106,7 +106,7 @@ FUNCTIONAL_DEFECT = {
 # Option names are category codes with the dots dropped (E.1.1 -> E11), so they are plain identifiers.
 OPTIONS = {code.replace(".", ""): code for code in CATEGORIES}
 
-PROBLEM_TYPE = {
+PROBLEM_TYPE: Question = {
     "type": "choice",
     "instructions": (
         "Suppose a reviewer asks the author for one change to this pull request. Which kind of change is it "
@@ -121,7 +121,7 @@ FAULT_FILE_INSTRUCTIONS = (
 )
 
 
-def fault_file(row: ReviewInput) -> dict:
+def fault_file(row: ReviewInput) -> Question:
     """Asked when a pull request changes more than one file; each option is a file's path."""
     return {
         "type": "choice",
@@ -130,7 +130,7 @@ def fault_file(row: ReviewInput) -> dict:
     }
 
 
-def state(row: ReviewInput) -> dict:
+def state(row: ReviewInput) -> State:
     """What Jev reads: the title, the description and the diff of each file. Nothing from the review."""
     return {
         "pr_title": row.title,
@@ -139,8 +139,9 @@ def state(row: ReviewInput) -> dict:
     }
 
 
-def questions(row: ReviewInput) -> dict:
-    asked = {
+def questions(row: ReviewInput) -> dict[str, Question]:
+    """Every question this pull request is asked, under the key its answer comes back with."""
+    asked: dict[str, Question] = {
         "changes_requested": CHANGES_REQUESTED,
         "functional_defect": FUNCTIONAL_DEFECT,
         "problem_type": PROBLEM_TYPE,
@@ -150,5 +151,6 @@ def questions(row: ReviewInput) -> dict:
     return asked
 
 
-def request(row: ReviewInput, model: str) -> dict:
+def request(row: ReviewInput, model: str) -> JevRequest:
+    """One Jev call: the model, the pull request as Jev reads it, and its questions."""
     return {"model": model, "state": state(row), "questions": questions(row)}
